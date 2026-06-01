@@ -1,0 +1,26 @@
+import {fail} from "../utils.js";
+
+export async function requestDevice() {
+    if (!navigator.gpu) {
+        fail("navigator.gpu is not defined - WebGPU is not available in this browser");
+    }
+
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        fail("requestAdapter returned null - this renderer can't run on this system");
+    }
+
+    const device = await adapter.requestDevice();
+    if (!device) {
+        fail("Unable to get a device for an unknown readson ");
+    }
+
+    device.lost.then((reason) => {
+        fail(`Device lost ("${reason.reason}"):\n${reason.message}`);
+    });
+    device.addEventListener("uncapturederror", (ev) => {
+        fail(`Uncaptured error:\n${ev.error.message}`);
+    });
+
+    return device;
+}

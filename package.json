@@ -1,0 +1,19 @@
+{
+  "name": "web-gs-renderer",
+  "version": "1.0.0",
+  "description": "WebGPU Gaussion Splatting Renderer",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "private": true,
+  "devDependencies": {
+    "@webgpu/types": "^0.1.70",
+    "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "wgpu-matrix": "^3.4.2"
+  }
+}
