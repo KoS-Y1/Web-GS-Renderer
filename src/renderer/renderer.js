@@ -1,4 +1,8 @@
-import testWGSL from "../shaders/test.wgsl?raw"
+import computeWGSL from "../shaders/compute.wgsl?raw"
+import blitWGSL from "../shaders/blit.wgsl?raw"
+
+const WIDTH = 512;
+const HEIGHT = 512;
 
 export class Renderer {
     constructor(device, context, format) {
@@ -6,44 +10,92 @@ export class Renderer {
         this.context = context;
         this.format = format;
 
-        const testShaderModule = device.createShaderModule({
-            label: "test shader",
-            code: testWGSL
+        const computeShaderModule = device.createShaderModule({
+            label: "compute shader",
+            code: computeWGSL,
         });
-        this.testPipeline = device.createRenderPipeline({
-            label: "test pipeline",
+        this.computePipeline = device.createComputePipeline({
+            label: "compute pipeline",
+            layout: "auto",
+            compute: {
+                module: computeShaderModule,
+                entryPoint: "computeMain",
+            },
+        });
+
+        this.computeOutput = device.createTexture({
+            label: "compute output",
+            size: [WIDTH, HEIGHT],
+            format: "rgba8unorm",
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        const computeOutputView = this.computeOutput.createView();
+
+        this.computeBindGroup = device.createBindGroup({
+            label: "compute bindGroup",
+            layout: this.computePipeline.getBindGroupLayout(0),
+            entries: [{binding: 0, resource: computeOutputView}],
+        });
+
+        const blitShaderModule = device.createShaderModule({
+            label: "blit shader",
+            code: blitWGSL,
+        });
+        this.blitPipeline = device.createRenderPipeline({
+            label: "blit pipeline",
             layout: "auto",
             vertex: {
-                module: testShaderModule,
+                module: blitShaderModule,
+                entryPoint: "vertexMain",
             },
             fragment: {
-                module: testShaderModule,
-                targets: [{format: format}],
+                module: blitShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{format: this.format}],
             },
+            primitive: {topology: "triangle-list"},
         });
-        this.renderPassDesc = {
-            label: "test canvas renderPass",
-            colorAttachments: [{
-                clearValue: [0.3, 0.3, 0.3, 1.0],
-                loadOp: "clear",
-                storeOp: "store",
-            }]
-        }
+
+        const sampler = device.createSampler({
+            label: "blit sampler",
+            magFilter: "linear",
+            minFilter: "linear",
+        });
+        this.blitBindGroup = device.createBindGroup({
+            label: "blit bindGroup",
+            layout: this.blitPipeline.getBindGroupLayout(0),
+            entries: [
+                {binding: 0, resource: computeOutputView},
+                {binding: 1, resource: sampler},
+            ],
+        });
     }
 
     render() {
-        this.renderPassDesc.colorAttachments[0].view = this.context.getCurrentTexture().createView();
-
         const encoder = this.device.createCommandEncoder({
-            label: "test encoder",
-        })
+            label: "frame encoder",
+        });
 
-        const pass = encoder.beginRenderPass(this.renderPassDesc);
-        pass.setPipeline(this.testPipeline);
-        pass.draw(3);
-        pass.end();
+        const computePass = encoder.beginComputePass({label: "compute pass"});
+        computePass.setPipeline(this.computePipeline);
+        computePass.setBindGroup(0, this.computeBindGroup);
+        computePass.dispatchWorkgroups(Math.ceil(WIDTH / 8), Math.ceil(HEIGHT / 8));
+        computePass.end();
 
-        const commandBuffer = encoder.finish();
-        this.device.queue.submit([commandBuffer]);
+        const renderPass = encoder.beginRenderPass({
+            label: "blit pass",
+            colorAttachments: [{
+                view: this.context.getCurrentTexture().createView(),
+                clearValue: {r: 0, g: 0, b: 0, a: 1},
+                loadOp: "clear",
+                storeOp: "store",
+            }],
+        });
+        renderPass.setPipeline(this.blitPipeline);
+        renderPass.setBindGroup(0, this.blitBindGroup);
+        renderPass.draw(3);
+        renderPass.end();
+
+        this.device.queue.submit([encoder.finish()]);
     }
 }
