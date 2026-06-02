@@ -6,3 +6,19 @@ export function configureCanvas(device, canvas) {
 
     return {context, format};
 }
+
+export function resizeCanvas(device, canvas, onResize) {
+    const observer = new ResizeObserver(entries => {
+        for (const entry of entries) {
+            const width = entry.devicePixelContentBoxSize?.[0].inlineSize ?? entry.contentBoxSize[0].inlineSize * devicePixelRatio;
+            const height = entry.devicePixelContentBoxSize?.[0].blockSize ?? entry.contentBoxSize[0].blockSize * devicePixelRatio;
+            const maxSize = device.limits.maxTextureDimension2D;
+            const canvas = entry.target;
+            canvas.width = Math.max(1, Math.min(Math.floor(width), maxSize));
+            canvas.height = Math.max(1, Math.min(Math.floor(height), maxSize));
+
+            onResize?.();
+        }
+    })
+    observer.observe(canvas);
+}

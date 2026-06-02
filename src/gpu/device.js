@@ -24,3 +24,24 @@ export async function requestDevice() {
 
     return device;
 }
+
+export function createShaderModule(device, label, code) {
+    const module = device.createShaderModule({label, code});
+
+    module.getCompilationInfo().then((info) => {
+        for (const m of info.messages) {
+            const where = `${label}:${m.lineNum}:${m.linePos}`;
+            const text = `[${m.type} ${where} - ${m.message}]`;
+
+            if (m.type == "error") {
+                console.error(text);
+            } else if (m.type == "warning") {
+                console.warn(text);
+            } else {
+                console.info(text);
+            }
+        }
+    })
+
+    return module;
+}

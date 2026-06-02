@@ -1,8 +1,7 @@
 import computeWGSL from "../shaders/compute.wgsl?raw"
 import blitWGSL from "../shaders/blit.wgsl?raw"
 
-const WIDTH = 512;
-const HEIGHT = 512;
+import {createShaderModule} from "../gpu/device.js";
 
 export class Renderer {
     constructor(device, context, format) {
@@ -10,10 +9,7 @@ export class Renderer {
         this.context = context;
         this.format = format;
 
-        const computeShaderModule = device.createShaderModule({
-            label: "compute shader",
-            code: computeWGSL,
-        });
+        const computeShaderModule = createShaderModule(device, "compute shader", computeWGSL);
         this.computePipeline = device.createComputePipeline({
             label: "compute pipeline",
             layout: "auto",
@@ -23,24 +19,7 @@ export class Renderer {
             },
         });
 
-        this.computeOutput = device.createTexture({
-            label: "compute output",
-            size: [WIDTH, HEIGHT],
-            format: "rgba8unorm",
-            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        });
-        const computeOutputView = this.computeOutput.createView();
-
-        this.computeBindGroup = device.createBindGroup({
-            label: "compute bindGroup",
-            layout: this.computePipeline.getBindGroupLayout(0),
-            entries: [{binding: 0, resource: computeOutputView}],
-        });
-
-        const blitShaderModule = device.createShaderModule({
-            label: "blit shader",
-            code: blitWGSL,
-        });
+        const blitShaderModule = createShaderModule(device, "blit shader", blitWGSL);
         this.blitPipeline = device.createRenderPipeline({
             label: "blit pipeline",
             layout: "auto",
@@ -56,17 +35,48 @@ export class Renderer {
             primitive: {topology: "triangle-list"},
         });
 
-        const sampler = device.createSampler({
-            label: "blit sampler",
+        this.linearSampler = device.createSampler({
+            label: "linear sampler",
             magFilter: "linear",
             minFilter: "linear",
         });
-        this.blitBindGroup = device.createBindGroup({
+
+        this.width = 0;
+        this.height = 0;
+        this.computeOutput = null;
+        this.computeBindGroup = null;
+        this.blitBindGroup = null;
+    }
+
+    resize() {
+        const {width, height} = this.context.canvas;
+        if (width === this.width && height === this.height) {
+            return;
+        }
+        this.width = width;
+        this.height = height;
+
+        this.computeOutput?.destroy();
+        this.computeOutput = this.device.createTexture({
+            label: "compute output",
+            size: [width, height],
+            format: "rgba8unorm",
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        const computeOutputView = this.computeOutput.createView();
+
+        this.computeBindGroup = this.device.createBindGroup({
+            label: "compute bindGroup",
+            layout: this.computePipeline.getBindGroupLayout(0),
+            entries: [{binding: 0, resource: computeOutputView}],
+        });
+
+        this.blitBindGroup = this.device.createBindGroup({
             label: "blit bindGroup",
             layout: this.blitPipeline.getBindGroupLayout(0),
             entries: [
                 {binding: 0, resource: computeOutputView},
-                {binding: 1, resource: sampler},
+                {binding: 1, resource: this.linearSampler},
             ],
         });
     }
@@ -79,7 +89,7 @@ export class Renderer {
         const computePass = encoder.beginComputePass({label: "compute pass"});
         computePass.setPipeline(this.computePipeline);
         computePass.setBindGroup(0, this.computeBindGroup);
-        computePass.dispatchWorkgroups(Math.ceil(WIDTH / 8), Math.ceil(HEIGHT / 8));
+        computePass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
         computePass.end();
 
         const renderPass = encoder.beginRenderPass({
