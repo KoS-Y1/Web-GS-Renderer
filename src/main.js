@@ -2,12 +2,12 @@ import {requestDevice} from "./gpu/device.js";
 import {configureCanvas, resizeCanvas} from "./gpu/context.js";
 import {Renderer} from "./renderer/renderer.js";
 
-const gpuCanvas = "gpu-canvas";
+const GPU_CANVAS = "gpu-canvas";
 
 async function main() {
     const device = await requestDevice();
 
-    const canvas = document.getElementById(gpuCanvas);
+    const canvas = document.getElementById(GPU_CANVAS);
     const {context, format} = configureCanvas(device, canvas);
 
     const renderer = new Renderer(device, context, format);

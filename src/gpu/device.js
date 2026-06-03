@@ -1,4 +1,4 @@
-import {fail} from "../utils.js";
+import {fail} from "../utils/utils.js";
 
 export async function requestDevice() {
     if (!navigator.gpu) {
