@@ -2,12 +2,12 @@ import {fail} from "../utils/utils.js";
 
 // Required attribute for Gaussian splatting file
 const REQUIRED_ATTRIBUTES = [
-    "x", "y", "z",  // position
-    "scale_0", "scale_1", "scale_2", // scale
-    "rot_0", "rot_1", "rot_2", "rot_3", // rotation
-    "opacity", // opacity
-    "f_dc_0", "f_dc_1", "f_dc_2", // direct color component
-    ...Array.from({length: 45}, (_, i) => `f_rest_${i}`) // spherical harmonic coefficients
+    "x", "y", "z",                                                                          // position
+    "scale_0", "scale_1", "scale_2",                                                        // scale
+    "rot_0", "rot_1", "rot_2", "rot_3",                                                     // rotation
+    "opacity",                                                                              // opacity
+    "f_dc_0", "f_dc_1", "f_dc_2",                                                           // direct color component
+    ...Array.from({length: 45}, (_, i) => `f_rest_${i}`)      // spherical harmonic coefficients
 ];
 
 const TYPE_SIZE = {
@@ -73,37 +73,39 @@ function loadPly(fileName, buffer) {
     const view = new DataView(buffer);
     const propertiesByName = new Map(properties.map((p) => [p.name, p]));
     const out = {
-        positions: new Float32Array(count * 3),
-        scales: new Float32Array(count * 3),
-        rotations: new Float32Array(count * 4),
-        colors: new Float32Array(count * 3),
-        opacities: new Float32Array(count),
-        shs: new Float32Array(count * 45),
-        count: count
+        count: count,
+        packed: new Float32Array(count * (3 /*position*/ + 3 /*scale*/ + 4 /*rotation*/ + 3 /*color*/ + 1 /*opacity*/ + 45 /*sh*/)),
     };
+
+    const positionOffst = 0;
+    const scaleOffset = positionOffst + count * 3;
+    const rotationOffset = scaleOffset + count * 3;
+    const colorOffset = rotationOffset + count * 4;
+    const opacityOffset = colorOffset + count * 3;
+    const shsOffset = opacityOffset + count;
 
     let base = 0;
     for (let i = 0; i < count; ++i) {
         base = bodyStart + i * stride
 
-        out.positions[i * 3] = get("x");
-        out.positions[i * 3 + 1] = get("y");
-        out.positions[i * 3 + 2] = get("z");
+        out.packed[positionOffst + i * 3] = get("x");
+        out.packed[positionOffst + i * 3 + 1] = get("y");
+        out.packed[positionOffst + i * 3 + 2] = get("z");
 
-        out.scales[i * 3] = get("scale_0");
-        out.scales[i * 3 + 1] = get("scale_1");
-        out.scales[i * 3 + 2] = get("scale_2");
+        out.packed[scaleOffset + i * 3] = get("scale_0");
+        out.packed[scaleOffset + i * 3 + 1] = get("scale_1");
+        out.packed[scaleOffset + i * 3 + 2] = get("scale_2");
 
-        out.rotations[i * 4] = get("rot_0");
-        out.rotations[i * 4 + 1] = get("rot_1");
-        out.rotations[i * 4 + 2] = get("rot_2");
-        out.rotations[i * 4 + 3] = get("rot_3");
+        out.packed[rotationOffset + i * 4] = get("rot_0");
+        out.packed[rotationOffset + i * 4 + 1] = get("rot_1");
+        out.packed[rotationOffset + i * 4 + 2] = get("rot_2");
+        out.packed[rotationOffset + i * 4 + 3] = get("rot_3");
 
-        out.colors[i * 3] = get("f_dc_0");
-        out.colors[i * 3 + 1] = get("f_dc_1");
-        out.colors[i * 3 + 2] = get("f_dc_2");
+        out.packed[colorOffset + i * 3] = get("f_dc_0");
+        out.packed[colorOffset + i * 3 + 1] = get("f_dc_1");
+        out.packed[colorOffset + i * 3 + 2] = get("f_dc_2");
 
-        out.opacities[i] = get("opacity");
+        out.packed[opacityOffset + i] = get("opacity");
 
         getSphericalHarmonic(i);
     }
@@ -123,7 +125,7 @@ function loadPly(fileName, buffer) {
 
         let end = idx + "end_header".length;
 
-        if (bytes[end] == "\r".charCodeAt(0)) {
+        if (bytes[end] === "\r".charCodeAt(0)) {
             ++end;
         }
         if (bytes[end] === "\n".charCodeAt(0)) {
@@ -140,7 +142,7 @@ function loadPly(fileName, buffer) {
 
     function getSphericalHarmonic(i) {
         for (let j = 0; j < 45; ++j) {
-            out.shs[i * 45 + j] = get(`f_rest_${j}`);
+            out.packed[shsOffset + i * 45 + j] = get(`f_rest_${j}`);
         }
     }
 

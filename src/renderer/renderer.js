@@ -3,11 +3,15 @@ import blitWGSL from "../shaders/blit.wgsl?raw"
 
 import {createShaderModule} from "../gpu/device.js";
 
+const SCREE_VERTEX_COUNT = 4;
+
 export class Renderer {
     constructor(device, context, format) {
         this.device = device;
         this.context = context;
         this.format = format;
+
+        this.gsBuffers = new Map();
 
         const computeShaderModule = createShaderModule(device, "compute shader", computeWGSL);
         this.computePipeline = device.createComputePipeline({
@@ -32,7 +36,10 @@ export class Renderer {
                 entryPoint: "fragmentMain",
                 targets: [{format: this.format}],
             },
-            primitive: {topology: "triangle-list"},
+            primitive: {
+                topology: "triangle-strip",
+                cullMode: "none",
+            },
         });
 
         this.linearSampler = device.createSampler({
@@ -103,9 +110,22 @@ export class Renderer {
         });
         renderPass.setPipeline(this.blitPipeline);
         renderPass.setBindGroup(0, this.blitBindGroup);
-        renderPass.draw(3);
+        renderPass.draw(SCREE_VERTEX_COUNT);
         renderPass.end();
 
         this.device.queue.submit([encoder.finish()]);
+    }
+
+    uploadGsData(data, name) {
+        const buffer = this.device.createBuffer({
+            label: `${name} gs buffer`,
+            size: data.packed.byteLength,
+            usage: GPUBufferUsage.STORAGE,
+            mappedAtCreation: true,
+        });
+        new Float32Array(buffer.getMappedRange()).set(data.packed.byteLength);
+        buffer.unmap();
+
+        this.gsBuffers.set(name, {buffer, count: data.count});
     }
 }

@@ -10,7 +10,12 @@ export async function requestDevice() {
         fail("requestAdapter returned null - this renderer can't run on this system");
     }
 
-    const device = await adapter.requestDevice();
+    const device = await adapter.requestDevice({
+        requiredLimits: {
+            maxBufferSize: adapter.limits.maxBufferSize,
+            maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        }
+    });
     if (!device) {
         fail("Unable to get a device for an unknown readson ");
     }

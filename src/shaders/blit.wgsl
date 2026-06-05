@@ -5,11 +5,11 @@ struct VSOut {
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VSOut {
-    // Oversize triangle
-    var positions = array<vec2f, 3>(
-        vec2f(-1.0, -1.0),
-        vec2f( 3.0, -1.0),
-        vec2f(-1.0,  3.0),
+    let positions = array<vec2f, 4>(
+        vec2f(-1.0f, -1.0f),
+        vec2f(-1.0f,  1.0f),
+        vec2f( 1.0f, -1.0f),
+        vec2f( 1.0f,  1.0f),
     );
 
     let p = positions[vid];
