@@ -16,18 +16,17 @@ async function main() {
 
     const loadAllPly = Promise.all([
         loadProjectPly(STRAWBERRY_PLY),
-        loadProjectPly(CASTLE_PLY),
+        // loadProjectPly(CASTLE_PLY),
     ]);
 
     const renderer = new Renderer(device, context, format);
 
     const [strawberryData, castleData] = await loadAllPly;
     renderer.uploadGsData(strawberryData, "strawberry");
-    renderer.uploadGsData(castleData, "castle");
+    // renderer.uploadGsData(castleData, "castle");
 
     resizeCanvas(device, canvas, () => {
-        renderer.resize();
-        renderer.render();
+        renderer.execute()
     });
 
 }
