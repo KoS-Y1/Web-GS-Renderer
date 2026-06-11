@@ -34,7 +34,7 @@ export function createShaderModule(device, label, code) {
     const module = device.createShaderModule({label, code});
 
     module.getCompilationInfo().then((info) => {
-        for (const m of info.messages) {
+        info.messages.forEach((m) => {
             const where = `${label}:${m.lineNum}:${m.linePos}`;
             const text = `[${m.type} ${where} - ${m.message}]`;
 
@@ -45,7 +45,7 @@ export function createShaderModule(device, label, code) {
             } else {
                 console.info(text);
             }
-        }
+        });
     })
 
     return module;

@@ -157,7 +157,7 @@ function parseHeader(fileName, headerText) {
     const properties = [];
     let stride = 0;
 
-    for (const line of headerText.split("\n")) {
+    headerText.split("\n").forEach((line) => {
         const words = line.trim().split(/\s+/);
         if (words[0] === "format") {
             parseFormat(words);
@@ -169,7 +169,7 @@ function parseHeader(fileName, headerText) {
         if (words[0] === "property" && currentElement === "vertex") {
             parseProperty(words);
         }
-    }
+    });
 
     if (!hasFormat) {
         fail(`Invalid PLY (${fileName}): missing "format" line`);

@@ -25,7 +25,7 @@ struct GlobalUniforms {
 
 // Key for radix sort [tileId | depth]
 @group(1) @binding(0) var<storage, read_write> outputKeys: array<u32>;
-@group(1) @binding(1) var<storage, read_write> outputPhysicalIndex: array<u32>;
+@group(1) @binding(1) var<storage, read_write> outputPhysicalIndices: array<u32>;
 @group(1) @binding(2) var<storage, read_write> outputInstnaceCount: atomic<u32>;
 
 const SMALL_VALUE = 0.0000001f;
@@ -38,7 +38,9 @@ const TILE_PER_COLOMN = 4u;
 const Z_NEAR_VIEW = 0.2f;
 const FRUSTUM_EXTENTED = 1.3f;
 
-@compute @workgroup_size(32)
+const PREPROCESS_WORKGROUP_SIZE = 32u;
+
+@compute @workgroup_size(PREPROCESS_WORKGROUP_SIZE)
 fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     let gindex = gid.x;
     let count = uniforms.count;
@@ -108,7 +110,7 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
                 return;
             }
             outputKeys[slot] = key;
-            outputPhysicalIndex[slot] = gindex;
+            outputPhysicalIndices[slot] = gindex;
         }
     }
 }
