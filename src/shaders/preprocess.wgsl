@@ -30,10 +30,10 @@ struct GlobalUniforms {
 
 const SMALL_VALUE = 0.0000001f;
 
-const MAX_COUNT_FACTOR = 8u;
+const MAX_INSTANCE_FACTOR = 16u;
 
-const TILE_PER_ROW = 4u;
-const TILE_PER_COLOMN = 4u;
+const TILE_SIZE_X = 16u;
+const TILE_SIZE_Y = 16u;
 
 const Z_NEAR_VIEW = 0.2f;
 const FRUSTUM_EXTENTED = 1.3f;
@@ -89,20 +89,21 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     let boundingMinPx = positionPixel - vec2f(radius);
     let boundingMaxPx = positionPixel + vec2f(radius);
 
-    let tileSize = uniforms.textureSize / vec2f(f32(TILE_PER_ROW), f32(TILE_PER_COLOMN));
+    let tilesPerRow = (u32(uniforms.textureSize.x) + TILE_SIZE_X - 1u) / TILE_SIZE_X;
+    let tilesPerColumn = (u32(uniforms.textureSize.y) + TILE_SIZE_Y - 1u) / TILE_SIZE_Y;
 
     // Tile AABB
-    let minTileX = u32(clamp(floor(boundingMinPx.x / tileSize.x), 0.0f, f32(TILE_PER_ROW - 1u)));
-    let minTileY = u32(clamp(floor(boundingMinPx.y / tileSize.y), 0.0f, f32(TILE_PER_COLOMN - 1u)));
-    let maxTileX = u32(clamp(floor(boundingMaxPx.x / tileSize.x), 0.0f, f32(TILE_PER_ROW - 1u)));
-    let maxTileY = u32(clamp(floor(boundingMaxPx.y / tileSize.y), 0.0f, f32(TILE_PER_COLOMN - 1u)));
+    let minTileX = u32(clamp(floor(boundingMinPx.x / f32(TILE_SIZE_X)), 0.0f, f32(tilesPerRow - 1u)));
+    let minTileY = u32(clamp(floor(boundingMinPx.y / f32(TILE_SIZE_Y)), 0.0f, f32(tilesPerColumn - 1u)));
+    let maxTileX = u32(clamp(floor(boundingMaxPx.x / f32(TILE_SIZE_X)), 0.0f, f32(tilesPerRow - 1u)));
+    let maxTileY = u32(clamp(floor(boundingMaxPx.y / f32(TILE_SIZE_Y)), 0.0f, f32(tilesPerColumn - 1u)));
 
     let depthU16 = u32(saturate(positionNdc.z) * 65535.0f);
-    let maxCount = count * MAX_COUNT_FACTOR;
+    let maxCount = count * MAX_INSTANCE_FACTOR;
 
     for (var ty = minTileY; ty <= maxTileY; ty++) {
         for (var tx = minTileX; tx <= maxTileX; tx++) {
-            let tileId = ty * TILE_PER_ROW + tx;
+            let tileId = ty * tilesPerRow + tx;
             let key = (tileId << 16u) | (depthU16 & 0xFFFFu);
 
             let slot = atomicAdd(&outputInstnaceCount, 1u);
@@ -116,10 +117,6 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 // Helpers to get property 
-fn getPropertyF(offset: u32, propIndex: u32) -> f32 {
-    return gsParams[offset + propIndex];
-}
-
 fn getPropertyVec3f(offset: u32, propIndex: u32) -> vec3f {
     return vec3f(
         gsParams[offset + propIndex * 3],

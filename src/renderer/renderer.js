@@ -11,11 +11,13 @@ import scanWGSL from "../shaders/scan.wgsl?raw"
 import reorderWGSL from "../shaders/reorder.wgsl?raw"
 
 const SCREEN_VERTEX_COUNT = 4;
-const MAX_INSTANCE_FACTOR = 8;
+const MAX_INSTANCE_FACTOR = 16;
 const PREPROCESS_WORKGROUP_SIZE = 32;
 const RADIX_BLOCK_SIZE = 256; // count/reorder radix block size (elements per workgroup)
 
 const RADIX_PING_PONG_COUNT = 2;
+
+const MAX_DISPATCH_DIM = 65535;
 
 
 /*
@@ -198,6 +200,7 @@ export class Renderer {
             ],
         );
 
+
         this.#indirectArgPipeline = createPipeline(
             "indirect arg",
             indirectArgWGSL,
@@ -205,7 +208,7 @@ export class Renderer {
             [
                 [
                     {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform"}},
-                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
                     {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                     {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                 ]
@@ -402,6 +405,7 @@ export class Renderer {
         updateInddirectArgUniformBuffer();
         updateRadixUniformBuffer();
 
+        const imageDirty = this.#finalImageDirty;
         if (this.#finalImageDirty) {
             this.#blitBindGroup = this.#device.createBindGroup({
                 label: "blit bindGroup",
@@ -645,8 +649,5 @@ export class Renderer {
             [this.#blitBindGroup],
             (passEncoder) => passEncoder.draw(SCREEN_VERTEX_COUNT),
         );
-
     }
-
-
 }
