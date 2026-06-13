@@ -23,17 +23,14 @@ struct GlobalUniforms {
 // All data is stored in a flat array<f32>
 @group(0) @binding(1) var<storage, read> gsParams: array<f32>;
 
-// Key for radix sort [tileId | depth]
-@group(1) @binding(0) var<storage, read_write> outputKeys: array<u32>;
-@group(1) @binding(1) var<storage, read_write> outputPhysicalIndices: array<u32>;
-@group(1) @binding(2) var<storage, read_write> outputInstnaceCount: atomic<u32>;
-@group(1) @binding(3) var<storage, read_write> outputConicOpacity: array<vec4f>;
-@group(1) @binding(4) var<storage, read_write> outputPixelPositons: array<vec2f>;
-@group(1) @binding(5) var<storage, read_write> outputColors: array<vec3f>;
+@group(1) @binding(0) var<storage, read_write> outputTilesTouched: array<u32>;
+@group(1) @binding(1) var<storage, read_write> outputSplatMeta: array<vec4u>;
+@group(1) @binding(2) var<storage, read_write> outputConicOpacity: array<vec4f>;
+@group(1) @binding(3) var<storage, read_write> outputPixelPositons: array<vec2f>;
+@group(1) @binding(4) var<storage, read_write> outputColors: array<vec3f>;
 
 const SMALL_VALUE = 0.0000001f;
 
-const MAX_INSTANCE_FACTOR = 64u;
 const Z_NEAR_VIEW = 0.2f;
 const FRUSTUM_EXTENTED = 1.3f;
 const TILE_SIZE_X = 16u;
@@ -130,22 +127,15 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     let maxTileY = u32(clamp(floor(boundingMaxPx.y / f32(TILE_SIZE_Y)), 0.0f, f32(tilesPerColumn - 1u)));
 
     let depthU16 = u32(saturate(positionNdc.z) * 65535.0f);
-    let maxCount = count * MAX_INSTANCE_FACTOR;
+    let tilesTouched = (maxTileX - minTileX + 1u) * (maxTileY - minTileY + 1u);
 
-    for (var ty = minTileY; ty <= maxTileY; ty++) {
-        for (var tx = minTileX; tx <= maxTileX; tx++) {
-            let tileId = ty * tilesPerRow + tx;
-            let key = (tileId << 16u) | (depthU16 & 0xFFFFu);
-
-            let slot = atomicAdd(&outputInstnaceCount, 1u);
-            if slot >= maxCount {
-                return;
-            }
-            outputKeys[slot] = key;
-            outputPhysicalIndices[slot] = gindex;
-        }
-    }
-
+    outputTilesTouched[gindex] = tilesTouched;
+    outputSplatMeta[gindex] = vec4u(
+        (minTileY << 16u) | minTileX,
+        (maxTileY << 16u) | maxTileX,
+        depthU16,
+        0u
+    );
 }
 
 // Helpers to get property 

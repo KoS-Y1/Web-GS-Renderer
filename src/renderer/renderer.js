@@ -11,10 +11,13 @@ import scanWGSL from "../shaders/scan.wgsl?raw"
 import reorderWGSL from "../shaders/reorder.wgsl?raw"
 import tileRangesWGSL from "../shaders/tile_ranges.wgsl?raw"
 import rasterWGSL from "../shaders/raseter.wgsl?raw"
+import offsetScanWGSL from "../shaders/offset_scan.wgsl?raw"
+import emitWGSL from "../shaders/emit.wgsl?raw"
 
 const SCREEN_VERTEX_COUNT = 4;
 const MAX_INSTANCE_FACTOR = 64;
 const PREPROCESS_WORKGROUP_SIZE = 32;
+const EMIT_WORKGROUP_SIZE = 256;
 const RADIX_BLOCK_SIZE = 256; // count/reorder radix block size (elements per workgroup)
 
 const RADIX_PING_PONG_COUNT = 2;
@@ -89,6 +92,9 @@ export class Renderer {
     #instanceCountBuffer;
     #radixIndirecArgBuffer;
 
+    #offsetsBuffer;
+    #splatMetaBuffer;
+
     #conicOpacityBuffer;
     #pixelPositionsBuffer;
     #colorsBuffer;
@@ -112,6 +118,13 @@ export class Renderer {
 
     #scanPipeline;
     #scanBindGroup;
+
+    #offsetScanPipeline;
+    #offsetScanBindGroup;
+
+    #emitPipeline;
+    #emitBindGroup0;
+    #emitBindGroup1;
 
     #reorderPipeline;
     #reorderBindGroup0s;
@@ -223,7 +236,6 @@ export class Renderer {
                     {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                     {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                     {binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
-                    {binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                 ]
             ],
         );
@@ -270,6 +282,37 @@ export class Renderer {
                 ]
             ],
         )
+
+        this.#offsetScanPipeline = createPipeline(
+            "offset scan",
+            offsetScanWGSL,
+            createComputePipeline,
+            [
+                [
+                    {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                ]
+            ],
+        );
+
+        this.#emitPipeline = createPipeline(
+            "emit",
+            emitWGSL,
+            createComputePipeline,
+            [
+                [
+                    {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform"}},
+                ],
+                [
+                    {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                ]
+            ],
+        );
 
         this.#reorderPipeline = createPipeline(
             "reorder",
@@ -362,6 +405,8 @@ export class Renderer {
         this.#keysBuffers = [];
         this.#physicalIndicesBuffers = [];
         this.#countPrefixSumBuffer = null;
+        this.#offsetsBuffer = null;
+        this.#splatMetaBuffer = null;
         this.#conicOpacityBuffer = null;
         this.#pixelPositionsBuffer = null;
         this.#colorsBuffer = null;
@@ -372,6 +417,9 @@ export class Renderer {
         this.#indirectArgBindGroup = null;
         this.#countBindGroups = [];
         this.#scanBindGroup = null;
+        this.#offsetScanBindGroup = null;
+        this.#emitBindGroup0 = null;
+        this.#emitBindGroup1 = null;
         this.#reorderBindGroup0s = [];
         this.#reorderBindGroup1s = [];
         this.#blitBindGroup = null;
@@ -464,6 +512,11 @@ export class Renderer {
             this.#countPrefixSumBuffer?.destroy();
             this.#countPrefixSumBuffer = createStorageBuffer("count prefix sum buffer", RADIX_DIGITS * Math.ceil(maxInstance / RADIX_BLOCK_SIZE) * 4);
 
+            this.#offsetsBuffer?.destroy();
+            this.#offsetsBuffer = createStorageBuffer("offsets buffer", (gs.count + 1) * 4);
+            this.#splatMetaBuffer?.destroy();
+            this.#splatMetaBuffer = createStorageBuffer("splat meta buffer", gs.count * 16);
+
             this.#conicOpacityBuffer?.destroy();
             this.#conicOpacityBuffer = createStorageBuffer("conic opacity buffer", gs.count * CONIC_OPACITY_STRIDE);
             this.#pixelPositionsBuffer?.destroy();
@@ -541,12 +594,11 @@ export class Renderer {
                 label: "preprocess bind group 1",
                 layout: this.#preprocessPipeline.getBindGroupLayout(1),
                 entries: [
-                    {binding: 0, resource: {buffer: this.#keysBuffers[0]}},
-                    {binding: 1, resource: {buffer: this.#physicalIndicesBuffers[0]}},
-                    {binding: 2, resource: {buffer: this.#instanceCountBuffer}},
-                    {binding: 3, resource: {buffer: this.#conicOpacityBuffer}},
-                    {binding: 4, resource: {buffer: this.#pixelPositionsBuffer}},
-                    {binding: 5, resource: {buffer: this.#colorsBuffer}},
+                    {binding: 0, resource: {buffer: this.#offsetsBuffer}},
+                    {binding: 1, resource: {buffer: this.#splatMetaBuffer}},
+                    {binding: 2, resource: {buffer: this.#conicOpacityBuffer}},
+                    {binding: 3, resource: {buffer: this.#pixelPositionsBuffer}},
+                    {binding: 4, resource: {buffer: this.#colorsBuffer}},
                 ],
             });
 
@@ -586,6 +638,35 @@ export class Renderer {
                 entries: [
                     {binding: 0, resource: {buffer: this.#radixUniformBuffer, size: RADIX_UNIFORM_SIZE}},
                     {binding: 1, resource: {buffer: this.#countPrefixSumBuffer}},
+                ],
+            });
+
+            this.#offsetScanBindGroup = this.#device.createBindGroup({
+                label: "offset scan bind group",
+                layout: this.#offsetScanPipeline.getBindGroupLayout(0),
+                entries: [
+                    {binding: 0, resource: {buffer: this.#globalUniformBuffer}},
+                    {binding: 1, resource: {buffer: this.#offsetsBuffer}},
+                    {binding: 2, resource: {buffer: this.#instanceCountBuffer}},
+                ],
+            });
+
+            this.#emitBindGroup0 = this.#device.createBindGroup({
+                label: "emit bind group 0",
+                layout: this.#emitPipeline.getBindGroupLayout(0),
+                entries: [
+                    {binding: 0, resource: {buffer: this.#globalUniformBuffer}},
+                    {binding: 1, resource: {buffer: this.#offsetsBuffer}},
+                    {binding: 2, resource: {buffer: this.#splatMetaBuffer}},
+                    {binding: 3, resource: {buffer: this.#indirectArgUniformBuffer}},
+                ],
+            });
+            this.#emitBindGroup1 = this.#device.createBindGroup({
+                label: "emit bind group 1",
+                layout: this.#emitPipeline.getBindGroupLayout(1),
+                entries: [
+                    {binding: 0, resource: {buffer: this.#keysBuffers[0]}},
+                    {binding: 1, resource: {buffer: this.#physicalIndicesBuffers[0]}},
                 ],
             });
 
@@ -701,9 +782,7 @@ export class Renderer {
     #render(encoder) {
         const count = this.#gsBuffers.get(this.#currentGs).count;
 
-        this.#keysBuffers.forEach(buffer => encoder.clearBuffer(buffer));
-        this.#physicalIndicesBuffers.forEach(buffer => encoder.clearBuffer(buffer));
-        encoder.clearBuffer(this.#instanceCountBuffer);
+        encoder.clearBuffer(this.#offsetsBuffer);
 
         const executePass = (passEncoder, pipeline, bindGroups, execute) => {
             passEncoder.setPipeline(pipeline);
@@ -720,6 +799,20 @@ export class Renderer {
             this.#preprocessPipeline,
             [this.#preprocessBindGroup0, this.#preprocessBindGroup1],
             (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / PREPROCESS_WORKGROUP_SIZE)),
+        );
+
+        executePass(
+            encoder.beginComputePass({label: "offset scan pass"}),
+            this.#offsetScanPipeline,
+            [this.#offsetScanBindGroup],
+            (passEncoder) => passEncoder.dispatchWorkgroups(1),
+        );
+
+        executePass(
+            encoder.beginComputePass({label: "emit pass"}),
+            this.#emitPipeline,
+            [this.#emitBindGroup0, this.#emitBindGroup1],
+            (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / EMIT_WORKGROUP_SIZE)),
         );
 
         executePass(
