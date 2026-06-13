@@ -1,6 +1,6 @@
 @group(0) @binding(0) var<storage, read> keys: array<u32>;
 @group(0) @binding(1) var<storage, read> instanceCount: u32;
-@group(0) @binding(2) var<storage, read_write> outRanges: array<u32, 32u>; 
+@group(0) @binding(2) var<storage, read_write> outRanges: array<u32>; 
 
 const TILE_RANGE_WORKGROUP_SIZE = 256u;
 

@@ -9,9 +9,11 @@ import indirectArgWGSL from "../shaders/indirect_arg.wgsl?raw"
 import countWGSL from "../shaders/count.wgsl?raw"
 import scanWGSL from "../shaders/scan.wgsl?raw"
 import reorderWGSL from "../shaders/reorder.wgsl?raw"
+import tileRangesWGSL from "../shaders/tile_ranges.wgsl?raw"
+import rasterWGSL from "../shaders/raseter.wgsl?raw"
 
 const SCREEN_VERTEX_COUNT = 4;
-const MAX_INSTANCE_FACTOR = 16;
+const MAX_INSTANCE_FACTOR = 64;
 const PREPROCESS_WORKGROUP_SIZE = 32;
 const RADIX_BLOCK_SIZE = 256; // count/reorder radix block size (elements per workgroup)
 
@@ -19,21 +21,30 @@ const RADIX_PING_PONG_COUNT = 2;
 
 const MAX_DISPATCH_DIM = 65535;
 
+const TILE_SIZE_X = 16;
+const TILE_SIZE_Y = 16;
+
+// Storage-buffer strides (bytes) for the per-Gaussian preprocess outputs.
+const CONIC_OPACITY_STRIDE = 16; // vec4f
+const PIXEL_POSITION_STRIDE = 8; // vec2f
+const COLOR_STRIDE = 16;         // vec3f (16-byte aligned in a storage array)
+const TILE_RANGE_STRIDE = 8;     // 2 x u32 (start, end) per tile
+
 
 /*
 struct GlobalUniforms {
     view: mat4x4f,
     viewProj: mat4x4f,
+    cameraPos: vec3f,
+    count: u32,
     focal: vec2f,
     tanFov: vec2f,
     textureSize: vec2f,
-    count: u32,
     padding0: u32,
     padding1: u32,
-    padding2: u32,
 };
  */
-// 2 mat4 (128) + 3 vec2 (24) + count + 3 paddings (16) = 168, rounded up to 16-byte multiple.
+// 2 mat4 (128) + vec3 (12) + count (4) + 3 vec2 (24) + 2 paddings (8) = 176, already a 16-byte multiple.
 const GLOBAL_UNIFORM_SIZE = 176;
 
 /*
@@ -78,6 +89,11 @@ export class Renderer {
     #instanceCountBuffer;
     #radixIndirecArgBuffer;
 
+    #conicOpacityBuffer;
+    #pixelPositionsBuffer;
+    #colorsBuffer;
+    #tileRangesBuffer;
+
     #globalUniformBuffer;
     #radixUniformBuffer;
     #indirectArgUniformBuffer;
@@ -104,7 +120,16 @@ export class Renderer {
     #blitPipeline;
     #blitBindGroup;
 
-    #finalImageDirty;
+    #tileRangesPipeline;
+    #tileRangesBindGroup;
+
+    #rasterPipeline;
+    #rasterBindGroup;
+
+    #tilesPerRow;
+    #tilesPerColumn;
+
+    #isResized;
 
     constructor(device, context, format) {
         this.#device = device;
@@ -196,10 +221,12 @@ export class Renderer {
                     {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                     {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                     {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                 ]
             ],
         );
-
 
         this.#indirectArgPipeline = createPipeline(
             "indirect arg",
@@ -285,6 +312,40 @@ export class Renderer {
             ],
         );
 
+        this.#tileRangesPipeline = createPipeline(
+            "tile ranges",
+            tileRangesWGSL,
+            createComputePipeline,
+            [
+                [
+                    {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                ]
+            ],
+        );
+
+        this.#rasterPipeline = createPipeline(
+            "raster",
+            rasterWGSL,
+            createComputePipeline,
+            [
+                [
+                    {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform"}},
+                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {
+                        binding: 6,
+                        visibility: GPUShaderStage.COMPUTE,
+                        storageTexture: {access: "write-only", format: "rgba8unorm", viewDimension: "2d"},
+                    },
+                ]
+            ],
+        );
+
         this.#linearSampler = this.#device.createSampler({
             label: "linear sampler",
             magFilter: "linear",
@@ -301,6 +362,10 @@ export class Renderer {
         this.#keysBuffers = [];
         this.#physicalIndicesBuffers = [];
         this.#countPrefixSumBuffer = null;
+        this.#conicOpacityBuffer = null;
+        this.#pixelPositionsBuffer = null;
+        this.#colorsBuffer = null;
+        this.#tileRangesBuffer = null;
 
         this.#preprocessBindGroup0 = null;
         this.#preprocessBindGroup1 = null;
@@ -310,8 +375,10 @@ export class Renderer {
         this.#reorderBindGroup0s = [];
         this.#reorderBindGroup1s = [];
         this.#blitBindGroup = null;
+        this.#tileRangesBindGroup = null;
+        this.#rasterBindGroup = null;
 
-        this.#finalImageDirty = true;
+        this.#isResized = true;
     }
 
     setGs(name) {
@@ -364,7 +431,7 @@ export class Renderer {
         });
         this.#finalImageView = this.#finalImage.createView();
 
-        this.#finalImageDirty = true;
+        this.#isResized = true;
     }
 
     #update() {
@@ -397,6 +464,13 @@ export class Renderer {
             this.#countPrefixSumBuffer?.destroy();
             this.#countPrefixSumBuffer = createStorageBuffer("count prefix sum buffer", RADIX_DIGITS * Math.ceil(maxInstance / RADIX_BLOCK_SIZE) * 4);
 
+            this.#conicOpacityBuffer?.destroy();
+            this.#conicOpacityBuffer = createStorageBuffer("conic opacity buffer", gs.count * CONIC_OPACITY_STRIDE);
+            this.#pixelPositionsBuffer?.destroy();
+            this.#pixelPositionsBuffer = createStorageBuffer("pixel positions buffer", gs.count * PIXEL_POSITION_STRIDE);
+            this.#colorsBuffer?.destroy();
+            this.#colorsBuffer = createStorageBuffer("colors buffer", gs.count * COLOR_STRIDE);
+
             gsDirty = true;
         }
 
@@ -405,8 +479,18 @@ export class Renderer {
         updateInddirectArgUniformBuffer();
         updateRadixUniformBuffer();
 
-        const imageDirty = this.#finalImageDirty;
-        if (this.#finalImageDirty) {
+
+        const createResizeResources = () => {
+            this.#tilesPerRow = Math.ceil(this.#width / TILE_SIZE_X);
+            this.#tilesPerColumn = Math.ceil(this.#height / TILE_SIZE_Y);
+            const tileCount = this.#tilesPerRow * this.#tilesPerColumn;
+            this.#tileRangesBuffer?.destroy();
+            this.#tileRangesBuffer = this.#device.createBuffer({
+                label: "tile ranges buffer",
+                size: tileCount * TILE_RANGE_STRIDE,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+
             this.#blitBindGroup = this.#device.createBindGroup({
                 label: "blit bindGroup",
                 layout: this.#blitPipeline.getBindGroupLayout(0),
@@ -415,10 +499,35 @@ export class Renderer {
                     {binding: 1, resource: this.#linearSampler},
                 ],
             });
-            this.#finalImageDirty = false;
-        }
+        };
 
-        if (gsDirty) {
+        const createRasterBindGroups = () => {
+            this.#tileRangesBindGroup = this.#device.createBindGroup({
+                label: "tile ranges bind group",
+                layout: this.#tileRangesPipeline.getBindGroupLayout(0),
+                entries: [
+                    {binding: 0, resource: {buffer: this.#keysBuffers[0]}},
+                    {binding: 1, resource: {buffer: this.#instanceCountBuffer}},
+                    {binding: 2, resource: {buffer: this.#tileRangesBuffer}},
+                ],
+            });
+
+            this.#rasterBindGroup = this.#device.createBindGroup({
+                label: "raster bind group",
+                layout: this.#rasterPipeline.getBindGroupLayout(0),
+                entries: [
+                    {binding: 0, resource: {buffer: this.#globalUniformBuffer}},
+                    {binding: 1, resource: {buffer: this.#conicOpacityBuffer}},
+                    {binding: 2, resource: {buffer: this.#pixelPositionsBuffer}},
+                    {binding: 3, resource: {buffer: this.#colorsBuffer}},
+                    {binding: 4, resource: {buffer: this.#physicalIndicesBuffers[0]}},
+                    {binding: 5, resource: {buffer: this.#tileRangesBuffer}},
+                    {binding: 6, resource: this.#finalImageView},
+                ],
+            });
+        };
+
+        const createGsBindGroups = () => {
             this.#preprocessBindGroup0 = this.#device.createBindGroup({
                 label: "preprocess bind group 0",
                 layout: this.#preprocessPipeline.getBindGroupLayout(0),
@@ -435,6 +544,9 @@ export class Renderer {
                     {binding: 0, resource: {buffer: this.#keysBuffers[0]}},
                     {binding: 1, resource: {buffer: this.#physicalIndicesBuffers[0]}},
                     {binding: 2, resource: {buffer: this.#instanceCountBuffer}},
+                    {binding: 3, resource: {buffer: this.#conicOpacityBuffer}},
+                    {binding: 4, resource: {buffer: this.#pixelPositionsBuffer}},
+                    {binding: 5, resource: {buffer: this.#colorsBuffer}},
                 ],
             });
 
@@ -514,7 +626,18 @@ export class Renderer {
                     {binding: 1, resource: {buffer: this.#physicalIndicesBuffers[0]}},
                 ],
             });
+        };
+
+        if (this.#isResized) {
+            createResizeResources();
         }
+        if (gsDirty) {
+            createGsBindGroups();
+        }
+        if (this.#isResized || gsDirty) {
+            createRasterBindGroups();
+        }
+        this.#isResized = false;
 
         function updateGlobalUniformBuffer() {
             // TODO: fixed view, proj for now
@@ -523,15 +646,17 @@ export class Renderer {
             const uintData = new Uint32Array(uniformBytes);
 
             const viewOffset = 0;
-            const viewProjOffset = viewOffset + 4 * 4;
-            const focalOffset = viewProjOffset + 4 * 4;
-            const tanFovOffset = focalOffset + 2;
-            const textureSizeOffset = tanFovOffset + 2;
-            const countOffset = textureSizeOffset + 2;
+            const viewProjOffset = 16;
+            const cameraPosOffset = 32;
+            const countOffset = 35;
+            const focalOffset = 36;
+            const tanFovOffset = 38;
+            const textureSizeOffset = 40;
 
             const aspect = self.#width / self.#height;
             const fovY = 60 * Math.PI / 180;
-            const view = mat4.lookAt(vec3.create(0, 0, 0), vec3.create(0, 0, 1), vec3.create(0, 1, 0));
+            const eye = vec3.create(0, 0, 0);
+            const view = mat4.lookAt(eye, vec3.create(0, 0, 1), vec3.create(0, 1, 0));
             const proj = mat4.perspective(fovY, aspect, 0.2, 1000);
             const viewProj = mat4.multiply(proj, view);
             const tanFovY = Math.tan(fovY / 2);
@@ -541,10 +666,11 @@ export class Renderer {
 
             floatData.set(view, viewOffset);
             floatData.set(viewProj, viewProjOffset);
+            floatData.set(eye, cameraPosOffset);
+            uintData[countOffset] = gs.count;
             floatData.set([focalX, focalY], focalOffset);
             floatData.set([tanFovX, tanFovY], tanFovOffset);
             floatData.set([self.#width, self.#height], textureSizeOffset);
-            uintData[countOffset] = gs.count;
 
             self.#device.queue.writeBuffer(self.#globalUniformBuffer, 0, uniformBytes);
         }
@@ -634,6 +760,21 @@ export class Renderer {
                 (passEncoder) => passEncoder.dispatchWorkgroupsIndirect(this.#radixIndirecArgBuffer, 0),
             );
         }
+
+        encoder.clearBuffer(this.#tileRangesBuffer);
+        executePass(
+            encoder.beginComputePass({label: "tile ranges pass"}),
+            this.#tileRangesPipeline,
+            [this.#tileRangesBindGroup],
+            (passEncoder) => passEncoder.dispatchWorkgroupsIndirect(this.#radixIndirecArgBuffer, 0),
+        );
+
+        executePass(
+            encoder.beginComputePass({label: "raster pass"}),
+            this.#rasterPipeline,
+            [this.#rasterBindGroup],
+            (passEncoder) => passEncoder.dispatchWorkgroups(this.#tilesPerRow, this.#tilesPerColumn),
+        );
 
         executePass(
             encoder.beginRenderPass({

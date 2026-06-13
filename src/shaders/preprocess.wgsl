@@ -2,13 +2,13 @@
 struct GlobalUniforms {
     view: mat4x4f,
     viewProj: mat4x4f,
+    cameraPos: vec3f,
+    count: u32,
     focal: vec2f,
     tanFov: vec2f,
     textureSize: vec2f,
-    count: u32,
     padding0: u32,
     padding1: u32,
-    padding2: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: GlobalUniforms;
@@ -27,16 +27,34 @@ struct GlobalUniforms {
 @group(1) @binding(0) var<storage, read_write> outputKeys: array<u32>;
 @group(1) @binding(1) var<storage, read_write> outputPhysicalIndices: array<u32>;
 @group(1) @binding(2) var<storage, read_write> outputInstnaceCount: atomic<u32>;
+@group(1) @binding(3) var<storage, read_write> outputConicOpacity: array<vec4f>;
+@group(1) @binding(4) var<storage, read_write> outputPixelPositons: array<vec2f>;
+@group(1) @binding(5) var<storage, read_write> outputColors: array<vec3f>;
 
 const SMALL_VALUE = 0.0000001f;
 
-const MAX_INSTANCE_FACTOR = 16u;
-
-const TILE_SIZE_X = 16u;
-const TILE_SIZE_Y = 16u;
-
+const MAX_INSTANCE_FACTOR = 64u;
 const Z_NEAR_VIEW = 0.2f;
 const FRUSTUM_EXTENTED = 1.3f;
+const TILE_SIZE_X = 16u;
+const TILE_SIZE_Y = 16u;
+const DEGREE = 3u;
+const MAX_COEFFICIENTS = 16u;
+
+const SH_C0 = 0.28209479177387814f;
+const SH_C1 = 0.4886025119029199f;
+const SH_C2_0 = 1.0925484305920792f;
+const SH_C2_1 = -1.0925484305920792f;
+const SH_C2_2 = 0.31539156525252005f;
+const SH_C2_3 = -1.0925484305920792f;
+const SH_C2_4 = 0.5462742152960396f;
+const SH_C3_0 = -0.5900435899266435f;
+const SH_C3_1 = 2.890611442640554f;
+const SH_C3_2 = -0.4570457994644658f;
+const SH_C3_3 = 0.3731763325901154f;
+const SH_C3_4 = -0.4570457994644658f;
+const SH_C3_5 = 1.445305721320277f;
+const SH_C3_6 = -0.5900435899266435f;
 
 const PREPROCESS_WORKGROUP_SIZE = 32u;
 
@@ -70,6 +88,7 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
         ndcToPixel(positionNdc.x, uniforms.textureSize.x),
         ndcToPixel(positionNdc.y, uniforms.textureSize.y)
     );
+    outputPixelPositons[gindex] = positionPixel;
 
     let scale = getPropertyVec3f(scaleOffset, gindex);
     let quaternion = getPropertyVec4f(quaternionOffset, gindex);
@@ -79,7 +98,19 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     let covariance = rotationMat3 * scaleMat3 * transpose(scaleMat3) * transpose(rotationMat3);
 
     let covariance2D = calculateCovariance2D(positionView, covariance);
-    let radius = calculateRadius(covariance2D);
+    let det = covariance2D.x * covariance2D.z - covariance2D.y * covariance2D.y;
+    let radius = calculateRadius(covariance2D, det);
+
+    let conic = vec3f(
+        covariance2D.z / det,
+        -covariance2D.y / det,
+        covariance2D.x / det
+    );
+    let opacity = getPropertyF(opacityOffset, gindex);
+    outputConicOpacity[gindex] = vec4f(conic, opacity);
+
+    let dir = normalize(position - uniforms.cameraPos);
+    outputColors[gindex] = calculateColor(gindex, colorOffset, shOffest, dir);
 
     // Frustum culling
     if !isInFrustum(radius, positionPixel) {
@@ -114,15 +145,25 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
             outputPhysicalIndices[slot] = gindex;
         }
     }
+
 }
 
 // Helpers to get property 
+fn getPropertyF(offset: u32, propIndex: u32) -> f32 {
+    return gsParams[offset + propIndex];
+}
+
 fn getPropertyVec3f(offset: u32, propIndex: u32) -> vec3f {
     return vec3f(
         gsParams[offset + propIndex * 3],
         gsParams[offset + propIndex * 3 + 1],
         gsParams[offset + propIndex * 3 + 2]
     );
+}
+
+fn getShRest(offset: u32, propIndex: u32, c: u32) -> vec3f {
+    let base = offset + propIndex * 45u + c;
+    return vec3f(gsParams[base], gsParams[base + 15u], gsParams[base + 30u]);
 }
 
 fn getPropertyVec4f(offset: u32, propIndex: u32) -> vec4f {
@@ -176,6 +217,38 @@ fn calculateJocabian(u: vec4f, f: vec2f) -> mat3x2f {
     );
 }
 
+fn calculateColor(propIndex: u32, colorOffset: u32, shOffset: u32, dir: vec3f) -> vec3f {
+    let x = dir.x;
+    let y = dir.y;
+    let z = dir.z;
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let yz = y * z;
+    let xz = x * z;
+
+    var result = SH_C0 * getPropertyVec3f(colorOffset, propIndex)
+        - SH_C1 * y * getShRest(shOffset, propIndex, 0u)
+        + SH_C1 * z * getShRest(shOffset, propIndex, 1u)
+        - SH_C1 * x * getShRest(shOffset, propIndex, 2u)
+        + SH_C2_0 * xy * getShRest(shOffset, propIndex, 3u)
+        + SH_C2_1 * yz * getShRest(shOffset, propIndex, 4u)
+        + SH_C2_2 * (2.0f * zz - xx - yy) * getShRest(shOffset, propIndex, 5u)
+        + SH_C2_3 * xz * getShRest(shOffset, propIndex, 6u)
+        + SH_C2_4 * (xx - yy) * getShRest(shOffset, propIndex, 7u)
+        + SH_C3_0 * y * (3.0f * xx - yy) * getShRest(shOffset, propIndex, 8u)
+        + SH_C3_1 * xy * z * getShRest(shOffset, propIndex, 9u)
+        + SH_C3_2 * y * (4.0f * zz - xx - yy) * getShRest(shOffset, propIndex, 10u)
+        + SH_C3_3 * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * getShRest(shOffset, propIndex, 11u)
+        + SH_C3_4 * x * (4.0f * zz - xx - yy) * getShRest(shOffset, propIndex, 12u)
+        + SH_C3_5 * z * (xx - yy) * getShRest(shOffset, propIndex, 13u)
+        + SH_C3_6 * x * (xx - 3.0f * yy) * getShRest(shOffset, propIndex, 14u);
+
+    result += 0.5f;
+    return max(result, vec3f(0.0f));
+}
+
 fn calculateCovariance2D(positionView: vec4f, covariance: mat3x3f) -> vec3f {
     let lim = FRUSTUM_EXTENTED * uniforms.tanFov;
     var t = positionView.xyz;
@@ -196,8 +269,7 @@ fn calculateCovariance2D(positionView: vec4f, covariance: mat3x3f) -> vec3f {
     return vec3f(covariance2D[0][0] + 0.3f, covariance2D[0][1], covariance2D[1][1] + 0.3f);
 }
 
-fn calculateRadius(covariance: vec3f) -> f32 {
-    let det = covariance.x * covariance.z - covariance.y * covariance.y;
+fn calculateRadius(covariance: vec3f, det: f32) -> f32 {
     let mid = 0.5f * (covariance.x + covariance.z);
     let lambda = mid + sqrt(max(0.1f, mid * mid - det));
     return ceil(3.0f * sqrt(lambda));
