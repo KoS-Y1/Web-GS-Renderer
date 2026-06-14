@@ -25,12 +25,17 @@ async function main() {
     renderer.uploadGsData(strawberryData, "strawberry");
     renderer.uploadGsData(castleData, "castle");
 
-    renderer.setGs("castle");
+    renderer.setGs("strawberry");
 
     resizeCanvas(device, canvas, () => {
         renderer.execute()
     });
 
+    function frame() {
+        renderer.execute();
+        requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
 }
 
 try {

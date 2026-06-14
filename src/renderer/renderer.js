@@ -2,6 +2,7 @@ import {mat4, vec3} from "wgpu-matrix";
 
 import {createShaderModule} from "../gpu/device.js";
 import {fail} from "../utils/utils.js";
+import {Camera} from "./camera.js";
 
 import blitWGSL from "../shaders/blit.wgsl?raw"
 import preprocessWGSL from "../shaders/preprocess.wgsl?raw"
@@ -32,7 +33,6 @@ const CONIC_OPACITY_STRIDE = 16; // vec4f
 const PIXEL_POSITION_STRIDE = 8; // vec2f
 const COLOR_STRIDE = 16;         // vec3f (16-byte aligned in a storage array)
 const TILE_RANGE_STRIDE = 8;     // 2 x u32 (start, end) per tile
-
 
 /*
 struct GlobalUniforms {
@@ -78,6 +78,7 @@ export class Renderer {
     #width;
     #height;
     #frameCount;
+    #lastTime;
 
     #gsBuffers;
     #currentGs;
@@ -144,10 +145,13 @@ export class Renderer {
 
     #isResized;
 
+    #camera;
     constructor(device, context, format) {
         this.#device = device;
         this.#context = context;
         this.#format = format;
+
+        this.#camera = new Camera(context.canvas.width, context.canvas.height);
 
         this.#globalUniformBuffer = this.#device.createBuffer({
             label: "global uniform buffer",
@@ -450,7 +454,17 @@ export class Renderer {
     }
 
     execute() {
+        const now = performance.now();
+        const deltaTime = this.#lastTime === undefined ? 0 : (now - this.#lastTime) / 1000;
+        this.#lastTime = now;
+
         this.#resize();
+        this.#camera.update(deltaTime);
+
+        if (!this.#camera.pollDirty() && !this.#isResized && this.#currentGs === this.#previousGs) {
+            return;
+        }
+
         this.#update();
 
         const encoder = this.#device.createCommandEncoder({
@@ -469,6 +483,7 @@ export class Renderer {
         }
         this.#width = width;
         this.#height = height;
+        this.#camera.resize(width, height);
 
         this.#finalImage?.destroy();
         this.#finalImage = this.#device.createTexture({
@@ -721,7 +736,6 @@ export class Renderer {
         this.#isResized = false;
 
         function updateGlobalUniformBuffer() {
-            // TODO: fixed view, proj for now
             const uniformBytes = new ArrayBuffer(GLOBAL_UNIFORM_SIZE);
             const floatData = new Float32Array(uniformBytes);
             const uintData = new Uint32Array(uniformBytes);
@@ -734,23 +748,14 @@ export class Renderer {
             const tanFovOffset = 38;
             const textureSizeOffset = 40;
 
-            const aspect = self.#width / self.#height;
-            const fovY = 60 * Math.PI / 180;
-            const eye = vec3.create(0, 0, 0);
-            const view = mat4.lookAt(eye, vec3.create(0, 0, 1), vec3.create(0, 1, 0));
-            const proj = mat4.perspective(fovY, aspect, 0.2, 1000);
-            const viewProj = mat4.multiply(proj, view);
-            const tanFovY = Math.tan(fovY / 2);
-            const tanFovX = tanFovY * aspect;
-            const focalX = self.#width / (2 * tanFovX);
-            const focalY = self.#height / (2 * tanFovY);
+            const {view, projView, eye, focal, tanFov} = self.#camera.getUniform();
 
             floatData.set(view, viewOffset);
-            floatData.set(viewProj, viewProjOffset);
+            floatData.set(projView, viewProjOffset);
             floatData.set(eye, cameraPosOffset);
             uintData[countOffset] = gs.count;
-            floatData.set([focalX, focalY], focalOffset);
-            floatData.set([tanFovX, tanFovY], tanFovOffset);
+            floatData.set(focal, focalOffset);
+            floatData.set(tanFov, tanFovOffset);
             floatData.set([self.#width, self.#height], textureSizeOffset);
 
             self.#device.queue.writeBuffer(self.#globalUniformBuffer, 0, uniformBytes);
