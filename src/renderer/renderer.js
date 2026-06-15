@@ -1,6 +1,7 @@
 import {mat4, vec3} from "wgpu-matrix";
 
 import {createShaderModule} from "../gpu/device.js";
+import {GpuProfiler} from "../gpu/profiler.js";
 import {fail} from "../utils/utils.js";
 import {Camera} from "./camera.js";
 
@@ -8,7 +9,7 @@ import blitWGSL from "../shaders/blit.wgsl?raw"
 import preprocessWGSL from "../shaders/preprocess.wgsl?raw"
 import indirectArgWGSL from "../shaders/indirect_arg.wgsl?raw"
 import countWGSL from "../shaders/count.wgsl?raw"
-import scanWGSL from "../shaders/scan.wgsl?raw"
+import scanParallelWGSL from "../shaders/scan_parallel.wgsl?raw"
 import reorderWGSL from "../shaders/reorder.wgsl?raw"
 import tileRangesWGSL from "../shaders/tile_ranges.wgsl?raw"
 import rasterWGSL from "../shaders/raseter.wgsl?raw"
@@ -69,6 +70,8 @@ const RADIX_UNIFORM_SIZE = 16;
 const RADIX_DIGITS = 256;
 const RADIX_PASS_COUNT = 4;
 const RADIX_UNIFORM_STRIDE = 256;
+const SCAN_PARALLEL_WORKGROUP_SIZE = 256;
+const MAX_WORKGROUPS_PER_DIM = 65535;
 
 
 export class Renderer {
@@ -90,6 +93,7 @@ export class Renderer {
     #keysBuffers;
     #physicalIndicesBuffers;
     #countPrefixSumBuffer;
+    #scanBlockSumsBuffer;
     #instanceCountBuffer;
     #radixIndirecArgBuffer;
 
@@ -117,8 +121,10 @@ export class Renderer {
     #countPipeline;
     #countBindGroups;
 
-    #scanPipeline;
-    #scanBindGroup;
+    #scanLocalPipeline;
+    #scanBlockSumsPipeline;
+    #scanAddOffsetPipeline;
+    #scanParallelBindGroup;
 
     #offsetScanPipeline;
     #offsetScanBindGroup;
@@ -146,12 +152,14 @@ export class Renderer {
     #isResized;
 
     #camera;
+    #profiler;
+
     constructor(device, context, format) {
         this.#device = device;
         this.#context = context;
         this.#format = format;
 
-        this.#camera = new Camera(context.canvas.width, context.canvas.height);
+        this.#profiler = new GpuProfiler(device);
 
         this.#globalUniformBuffer = this.#device.createBuffer({
             label: "global uniform buffer",
@@ -183,7 +191,8 @@ export class Renderer {
             usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
 
-        const createComputePipeline = (name, shaderModule, groupLayouts) => {
+
+        const createComputePipeline = (name, shaderModule, groupLayouts, entry = "compute") => {
             return this.#device.createComputePipeline({
                 label: `${name} compute pipeline`,
                 layout: device.createPipelineLayout({
@@ -191,7 +200,7 @@ export class Renderer {
                 }),
                 compute: {
                     module: shaderModule,
-                    entryPoint: "computeMain"
+                    entryPoint: `${entry}Main`
                 }
             })
         }
@@ -271,21 +280,20 @@ export class Renderer {
             ],
         );
 
-        this.#scanPipeline = createPipeline(
-            "scan",
-            scanWGSL,
-            createComputePipeline,
-            [
-                [
-                    {
-                        binding: 0,
-                        visibility: GPUShaderStage.COMPUTE,
-                        buffer: {type: "uniform", hasDynamicOffset: true},
-                    },
-                    {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
-                ]
+        const scanParallelModule = createShaderModule(device, "scan parallel shader", scanParallelWGSL);
+        const scanParallelLayout = this.#device.createBindGroupLayout({
+            entries: [
+                {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform", hasDynamicOffset: true}},
+                {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
             ],
-        )
+        });
+        this.#scanLocalPipeline = createComputePipeline(
+            "scan local", scanParallelModule, [scanParallelLayout], "scanLocal");
+        this.#scanBlockSumsPipeline = createComputePipeline(
+            "scan block sums", scanParallelModule, [scanParallelLayout], "scanBlockSums");
+        this.#scanAddOffsetPipeline = createComputePipeline(
+            "scan add offset", scanParallelModule, [scanParallelLayout], "scanAddOffset");
 
         this.#offsetScanPipeline = createPipeline(
             "offset scan",
@@ -402,6 +410,8 @@ export class Renderer {
         this.#width = 0;
         this.#height = 0;
 
+        this.#camera = new Camera(this.#width, this.#height);
+
         this.#gsBuffers = new Map();
         this.#currentGs = "";
         this.#previousGs = "";
@@ -409,6 +419,7 @@ export class Renderer {
         this.#keysBuffers = [];
         this.#physicalIndicesBuffers = [];
         this.#countPrefixSumBuffer = null;
+        this.#scanBlockSumsBuffer = null;
         this.#offsetsBuffer = null;
         this.#splatMetaBuffer = null;
         this.#conicOpacityBuffer = null;
@@ -420,7 +431,7 @@ export class Renderer {
         this.#preprocessBindGroup1 = null;
         this.#indirectArgBindGroup = null;
         this.#countBindGroups = [];
-        this.#scanBindGroup = null;
+        this.#scanParallelBindGroup = null;
         this.#offsetScanBindGroup = null;
         this.#emitBindGroup0 = null;
         this.#emitBindGroup1 = null;
@@ -472,6 +483,7 @@ export class Renderer {
         });
         this.#render(encoder);
         this.#device.queue.submit([encoder.finish()]);
+        this.#profiler.afterSubmit();
 
         ++this.#frameCount;
     }
@@ -526,6 +538,9 @@ export class Renderer {
             })
             this.#countPrefixSumBuffer?.destroy();
             this.#countPrefixSumBuffer = createStorageBuffer("count prefix sum buffer", RADIX_DIGITS * Math.ceil(maxInstance / RADIX_BLOCK_SIZE) * 4);
+
+            this.#scanBlockSumsBuffer?.destroy();
+            this.#scanBlockSumsBuffer = createStorageBuffer("scan block sums buffer", Math.ceil((RADIX_DIGITS * Math.ceil(maxInstance / RADIX_BLOCK_SIZE)) / SCAN_PARALLEL_WORKGROUP_SIZE) * 4);
 
             this.#offsetsBuffer?.destroy();
             this.#offsetsBuffer = createStorageBuffer("offsets buffer", (gs.count + 1) * 4);
@@ -647,12 +662,13 @@ export class Renderer {
                 ],
             });
 
-            this.#scanBindGroup = this.#device.createBindGroup({
-                label: "scan bind group",
-                layout: this.#scanPipeline.getBindGroupLayout(0),
+            this.#scanParallelBindGroup = this.#device.createBindGroup({
+                label: "scan parallel bind group",
+                layout: this.#scanLocalPipeline.getBindGroupLayout(0),
                 entries: [
                     {binding: 0, resource: {buffer: this.#radixUniformBuffer, size: RADIX_UNIFORM_SIZE}},
                     {binding: 1, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 2, resource: {buffer: this.#scanBlockSumsBuffer}},
                 ],
             });
 
@@ -787,6 +803,7 @@ export class Renderer {
     #render(encoder) {
         const count = this.#gsBuffers.get(this.#currentGs).count;
 
+        this.#profiler.begin();
         encoder.clearBuffer(this.#offsetsBuffer);
 
         const executePass = (passEncoder, pipeline, bindGroups, execute) => {
@@ -800,34 +817,41 @@ export class Renderer {
         };
 
         executePass(
-            encoder.beginComputePass({label: "preprocess pass"}),
+            encoder.beginComputePass({label: "preprocess pass", timestampWrites: this.#profiler.write("preprocess")}),
             this.#preprocessPipeline,
             [this.#preprocessBindGroup0, this.#preprocessBindGroup1],
             (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / PREPROCESS_WORKGROUP_SIZE)),
         );
 
         executePass(
-            encoder.beginComputePass({label: "offset scan pass"}),
+            encoder.beginComputePass({label: "offset scan pass", timestampWrites: this.#profiler.write("offset scan")}),
             this.#offsetScanPipeline,
             [this.#offsetScanBindGroup],
             (passEncoder) => passEncoder.dispatchWorkgroups(1),
         );
 
         executePass(
-            encoder.beginComputePass({label: "emit pass"}),
+            encoder.beginComputePass({label: "emit pass", timestampWrites: this.#profiler.write("emit")}),
             this.#emitPipeline,
             [this.#emitBindGroup0, this.#emitBindGroup1],
             (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / EMIT_WORKGROUP_SIZE)),
         );
 
         executePass(
-            encoder.beginComputePass({label: "indirect arg pass"}),
+            encoder.beginComputePass({
+                label: "indirect arg pass",
+                timestampWrites: this.#profiler.write("indirect arg")
+            }),
             this.#indirectArgPipeline,
             [this.#indirectArgBindGroup],
             (passEncoder) => passEncoder.dispatchWorkgroups(1),
         );
 
         // Radix sort
+        const countsBufferLength = RADIX_DIGITS * Math.ceil((count * MAX_INSTANCE_FACTOR) / RADIX_BLOCK_SIZE);
+        const scanBlockCount = Math.ceil(countsBufferLength / SCAN_PARALLEL_WORKGROUP_SIZE);
+        const scanGridX = Math.min(scanBlockCount, MAX_WORKGROUPS_PER_DIM);
+        const scanGridY = Math.ceil(scanBlockCount / scanGridX);
         for (let i = 0; i < RADIX_PASS_COUNT; ++i) {
             const parity = i & 1;
             const dynamicOffset = [i * RADIX_UNIFORM_STRIDE];
@@ -835,21 +859,35 @@ export class Renderer {
             encoder.clearBuffer(this.#countPrefixSumBuffer);
 
             executePass(
-                encoder.beginComputePass({label: "count pass"}),
+                encoder.beginComputePass({label: "count pass", timestampWrites: this.#profiler.write("count")}),
                 this.#countPipeline,
                 [[this.#countBindGroups[parity], dynamicOffset]],
                 (passEncoder) => passEncoder.dispatchWorkgroupsIndirect(this.#radixIndirecArgBuffer, 0),
             );
 
             executePass(
-                encoder.beginComputePass({label: "scan pass"}),
-                this.#scanPipeline,
-                [[this.#scanBindGroup, dynamicOffset]],
+                encoder.beginComputePass({label: "scan local pass", timestampWrites: this.#profiler.write("scan local")}),
+                this.#scanLocalPipeline,
+                [[this.#scanParallelBindGroup, dynamicOffset]],
+                (passEncoder) => passEncoder.dispatchWorkgroups(scanGridX, scanGridY),
+            );
+
+            executePass(
+                encoder.beginComputePass({label: "scan block sums pass", timestampWrites: this.#profiler.write("scan block sums")}),
+                this.#scanBlockSumsPipeline,
+                [[this.#scanParallelBindGroup, dynamicOffset]],
                 (passEncoder) => passEncoder.dispatchWorkgroups(1),
             );
 
             executePass(
-                encoder.beginComputePass({label: "reorder pass"}),
+                encoder.beginComputePass({label: "scan add offset pass", timestampWrites: this.#profiler.write("scan add offset")}),
+                this.#scanAddOffsetPipeline,
+                [[this.#scanParallelBindGroup, dynamicOffset]],
+                (passEncoder) => passEncoder.dispatchWorkgroups(scanGridX, scanGridY),
+            );
+
+            executePass(
+                encoder.beginComputePass({label: "reorder pass", timestampWrites: this.#profiler.write("reorder")}),
                 this.#reorderPipeline,
                 [
                     [this.#reorderBindGroup0s[parity], dynamicOffset],
@@ -861,14 +899,14 @@ export class Renderer {
 
         encoder.clearBuffer(this.#tileRangesBuffer);
         executePass(
-            encoder.beginComputePass({label: "tile ranges pass"}),
+            encoder.beginComputePass({label: "tile ranges pass", timestampWrites: this.#profiler.write("tile ranges")}),
             this.#tileRangesPipeline,
             [this.#tileRangesBindGroup],
             (passEncoder) => passEncoder.dispatchWorkgroupsIndirect(this.#radixIndirecArgBuffer, 0),
         );
 
         executePass(
-            encoder.beginComputePass({label: "raster pass"}),
+            encoder.beginComputePass({label: "raster pass", timestampWrites: this.#profiler.write("raster")}),
             this.#rasterPipeline,
             [this.#rasterBindGroup],
             (passEncoder) => passEncoder.dispatchWorkgroups(this.#tilesPerRow, this.#tilesPerColumn),
@@ -883,10 +921,13 @@ export class Renderer {
                     loadOp: "clear",
                     storeOp: "store",
                 }],
+                timestampWrites: this.#profiler.write("blit"),
             }),
             this.#blitPipeline,
             [this.#blitBindGroup],
             (passEncoder) => passEncoder.draw(SCREEN_VERTEX_COUNT),
         );
+
+        this.#profiler.resolve(encoder);
     }
 }

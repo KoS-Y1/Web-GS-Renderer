@@ -13,21 +13,22 @@ var<workgroup> temp: array<u32, SCAN_WORKGROUP_SIZE>;
 var<workgroup> prevLocalPrefixSum: u32;
 
 @compute @workgroup_size(SCAN_WORKGROUP_SIZE)
-fn computeMain(@builtin(local_invocation_index)lidx: u32) {
-    if lidx == 0u {
+fn computeMain(@builtin(local_invocation_index)lindex: u32) {
+    if lindex == 0u {
         prevLocalPrefixSum = 0u;
     }
     workgroupBarrier();
 
     let blockCounts = (uniforms.countsBufferLength + SCAN_WORKGROUP_SIZE - 1u) / SCAN_WORKGROUP_SIZE;
     for (var b = 0u; b < blockCounts; b++) {
-        let i = b * SCAN_WORKGROUP_SIZE + lidx; // index at the global count buffer
+        let n = uniforms.countsBufferLength;
+        let i = b * SCAN_WORKGROUP_SIZE + lindex; // index at the global count buffer
 
         var c = 0u;
-        if i < uniforms.countsBufferLength {
+        if i < n {
             c = counts[i];
         }
-        temp[lidx] = c;
+        temp[lindex] = c;
         workgroupBarrier();
 
         // Hillis-Steele scan
@@ -35,23 +36,23 @@ fn computeMain(@builtin(local_invocation_index)lidx: u32) {
         for (var shift = 1u; shift < SCAN_WORKGROUP_SIZE; shift = shift << 1u) {
             var prefix = 0u;
 
-            if shift <= lidx {
-                prefix = temp[lidx - shift];
+            if shift <= lindex {
+                prefix = temp[lindex - shift];
             }
 
             workgroupBarrier(); // Wait for all reads
-            temp[lidx] = temp[lidx] + prefix;
+            temp[lindex] = temp[lindex] + prefix;
             workgroupBarrier(); // Wait for all writes
         }
-        let inLanePrefix = temp[lidx] - c;
+        let inLanePrefix = temp[lindex] - c;
         let inLaneLastPrefix = temp[SCAN_WORKGROUP_SIZE - 1u];
 
-        if i < uniforms.countsBufferLength {
+        if i < n {
             counts[i] = prevLocalPrefixSum + inLanePrefix;
         }
         workgroupBarrier();
 
-        if lidx == 0u {
+        if lindex == 0u {
             prevLocalPrefixSum = prevLocalPrefixSum + inLaneLastPrefix;
         }
         workgroupBarrier();

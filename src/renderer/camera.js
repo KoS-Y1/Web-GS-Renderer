@@ -6,8 +6,8 @@ const DEFAULT_YAW = -90.0;
 const DEFUALT_PITCH = 0.0;
 const DEFAULT_FOV = 60.0;
 
-const DEFAULT_SPEED = 10.0;
-const DEFAULT_SENSITIVITY = 10.0;
+const DEFAULT_SPEED = 1.0;
+const DEFAULT_SENSITIVITY = 1.0;
 
 const WORLD_UP = vec3.create(0.0, 1.0, 0.0);
 const Z_NEAR = 0.2;
@@ -99,6 +99,8 @@ export class Camera {
 
     update(deltaTime) {
         const {forward, right} = this.#calculateCameraFrame();
+        const moveForward = vec3.negate(forward);
+        const moveRight = vec3.negate(right);
         const dist = DEFAULT_SPEED * deltaTime;
 
         let moved = false;
@@ -108,16 +110,16 @@ export class Camera {
         };
 
         if (this.#keys.has("KeyW")) {
-            step(forward, 1);
+            step(moveForward, 1);
         }
         if (this.#keys.has("KeyS")) {
-            step(forward, -1);
+            step(moveForward, -1);
         }
         if (this.#keys.has("KeyD")) {
-            step(right, 1);
+            step(moveRight, 1);
         }
         if (this.#keys.has("KeyA")) {
-            step(right, -1);
+            step(moveRight, -1);
         }
         if (this.#keys.has("KeyQ")) {
             step(WORLD_UP, 1);

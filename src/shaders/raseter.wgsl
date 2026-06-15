@@ -30,6 +30,7 @@ var<workgroup> localPhysicalIndices: array<u32, 256>;
 var<workgroup> localConicOpacities: array<vec4f, 256>;
 var<workgroup> localPixelPositions: array<vec2f, 256>;
 var<workgroup> doneCount: atomic<u32>;
+var<workgroup> allDone: u32;
 
 @compute @workgroup_size(TILE_SIZE_X, TILE_SIZE_Y )
 fn computeMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id) wid: vec3u, @builtin(global_invocation_id) gid: vec3u) {
@@ -59,7 +60,10 @@ fn computeMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_
             atomicAdd(&doneCount, 1u);
         }
         workgroupBarrier();
-        if atomicLoad(&doneCount) == TIlE_SIZE {
+        if lindex == 0u {
+            allDone = select(0u, 1u, atomicLoad(&doneCount) == TIlE_SIZE);
+        }
+        if workgroupUniformLoad(&allDone) == 1u {
             break;
         }
 

@@ -10,7 +10,16 @@ export async function requestDevice() {
         fail("requestAdapter returned null - this renderer can't run on this system");
     }
 
+    const requiredFeatures = [];
+    if (adapter.features.has("timestamp-query")) {
+        requiredFeatures.push("timestamp-query");
+    }
+    else{
+        fail("timestamp-query is not supported");
+    }
+
     const device = await adapter.requestDevice({
+        requiredFeatures,
         requiredLimits: {
             maxBufferSize: adapter.limits.maxBufferSize,
             maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
