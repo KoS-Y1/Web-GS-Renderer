@@ -8,9 +8,7 @@ import {Camera} from "./camera.js";
 import blitWGSL from "../shaders/blit.wgsl?raw"
 import preprocessWGSL from "../shaders/preprocess.wgsl?raw"
 import indirectArgWGSL from "../shaders/indirect_arg.wgsl?raw"
-import countWGSL from "../shaders/count.wgsl?raw"
-import scanParallelWGSL from "../shaders/scan_parallel.wgsl?raw"
-import reorderWGSL from "../shaders/reorder.wgsl?raw"
+import radixParallelWGSL from "../shaders/radix_parallel.wgsl?raw"
 import tileRangesWGSL from "../shaders/tile_ranges.wgsl?raw"
 import rasterWGSL from "../shaders/raseter.wgsl?raw"
 import offsetScanWGSL from "../shaders/offset_scan.wgsl?raw"
@@ -269,8 +267,8 @@ export class Renderer {
 
         this.#countPipeline = createPipeline(
             "count",
-            countWGSL,
-            createComputePipeline,
+            radixParallelWGSL,
+            (name, shaderModule, groupLayouts) => createComputePipeline(name, shaderModule, groupLayouts, "count"),
             [
                 [
                     {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform", hasDynamicOffset: true}},
@@ -280,20 +278,31 @@ export class Renderer {
             ],
         );
 
-        const scanParallelModule = createShaderModule(device, "scan parallel shader", scanParallelWGSL);
-        const scanParallelLayout = this.#device.createBindGroupLayout({
-            entries: [
+        const scanGroupLayout = [
+            [
                 {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform", hasDynamicOffset: true}},
-                {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
                 {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
-            ],
-        });
-        this.#scanLocalPipeline = createComputePipeline(
-            "scan local", scanParallelModule, [scanParallelLayout], "scanLocal");
-        this.#scanBlockSumsPipeline = createComputePipeline(
-            "scan block sums", scanParallelModule, [scanParallelLayout], "scanBlockSums");
-        this.#scanAddOffsetPipeline = createComputePipeline(
-            "scan add offset", scanParallelModule, [scanParallelLayout], "scanAddOffset");
+                {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+            ]
+        ];
+        this.#scanLocalPipeline = createPipeline(
+            "scan local",
+            radixParallelWGSL,
+            (name, shaderModule, groupLayouts) => createComputePipeline(name, shaderModule, groupLayouts, "scanLocal"),
+            scanGroupLayout,
+        );
+        this.#scanBlockSumsPipeline = createPipeline(
+            "scan block sums",
+            radixParallelWGSL,
+            (name, shaderModule, groupLayouts) => createComputePipeline(name, shaderModule, groupLayouts, "scanBlockSums"),
+            scanGroupLayout,
+        );
+        this.#scanAddOffsetPipeline = createPipeline(
+            "scan add offset",
+            radixParallelWGSL,
+            (name, shaderModule, groupLayouts) => createComputePipeline(name, shaderModule, groupLayouts, "scanAddOffset"),
+            scanGroupLayout,
+        );
 
         this.#offsetScanPipeline = createPipeline(
             "offset scan",
@@ -328,14 +337,14 @@ export class Renderer {
 
         this.#reorderPipeline = createPipeline(
             "reorder",
-            reorderWGSL,
-            createComputePipeline,
+            radixParallelWGSL,
+            (name, shaderModule, groupLayouts) => createComputePipeline(name, shaderModule, groupLayouts, "reorder"),
             [
                 [
                     {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "uniform", hasDynamicOffset: true}},
                     {binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
-                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
-                    {binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
+                    {binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
+                    {binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: {type: "read-only-storage"}},
                 ],
                 [
                     {binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {type: "storage"}},
@@ -667,8 +676,8 @@ export class Renderer {
                 layout: this.#scanLocalPipeline.getBindGroupLayout(0),
                 entries: [
                     {binding: 0, resource: {buffer: this.#radixUniformBuffer, size: RADIX_UNIFORM_SIZE}},
-                    {binding: 1, resource: {buffer: this.#countPrefixSumBuffer}},
-                    {binding: 2, resource: {buffer: this.#scanBlockSumsBuffer}},
+                    {binding: 2, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 3, resource: {buffer: this.#scanBlockSumsBuffer}},
                 ],
             });
 
@@ -707,8 +716,8 @@ export class Renderer {
                 entries: [
                     {binding: 0, resource: {buffer: this.#radixUniformBuffer, size: RADIX_UNIFORM_SIZE}},
                     {binding: 1, resource: {buffer: this.#keysBuffers[0]}},
-                    {binding: 2, resource: {buffer: this.#physicalIndicesBuffers[0]}},
-                    {binding: 3, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 2, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 4, resource: {buffer: this.#physicalIndicesBuffers[0]}},
                 ],
             });
             this.#reorderBindGroup1s[0] = this.#device.createBindGroup({
@@ -726,8 +735,8 @@ export class Renderer {
                 entries: [
                     {binding: 0, resource: {buffer: this.#radixUniformBuffer, size: RADIX_UNIFORM_SIZE}},
                     {binding: 1, resource: {buffer: this.#keysBuffers[1]}},
-                    {binding: 2, resource: {buffer: this.#physicalIndicesBuffers[1]}},
-                    {binding: 3, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 2, resource: {buffer: this.#countPrefixSumBuffer}},
+                    {binding: 4, resource: {buffer: this.#physicalIndicesBuffers[1]}},
                 ],
             });
             this.#reorderBindGroup1s[1] = this.#device.createBindGroup({
