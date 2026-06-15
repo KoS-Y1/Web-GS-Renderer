@@ -1,5 +1,3 @@
-import {mat4, vec3} from "wgpu-matrix";
-
 import {createShaderModule} from "../gpu/device.js";
 import {GpuProfiler} from "../gpu/profiler.js";
 import {fail} from "../utils/utils.js";
@@ -70,6 +68,13 @@ const RADIX_PASS_COUNT = 4;
 const RADIX_UNIFORM_STRIDE = 256;
 const SCAN_PARALLEL_WORKGROUP_SIZE = 256;
 const MAX_WORKGROUPS_PER_DIM = 65535;
+
+// Split a 1D workgroup count into a 2D grid so neither dimension exceeds the dispatch limit.
+// Shaders rebuild the linear index as wid.y * numWg.x + wid.x.
+function dispatchGrid(workgroupCount) {
+    const x = Math.min(Math.max(workgroupCount, 1), MAX_DISPATCH_DIM);
+    return [x, Math.ceil(workgroupCount / x)];
+}
 
 
 export class Renderer {
@@ -152,12 +157,12 @@ export class Renderer {
     #camera;
     #profiler;
 
-    constructor(device, context, format) {
+    constructor(device, context, format, onProfile) {
         this.#device = device;
         this.#context = context;
         this.#format = format;
 
-        this.#profiler = new GpuProfiler(device);
+        this.#profiler = new GpuProfiler(device, {onResult: onProfile});
 
         this.#globalUniformBuffer = this.#device.createBuffer({
             label: "global uniform buffer",
@@ -829,7 +834,7 @@ export class Renderer {
             encoder.beginComputePass({label: "preprocess pass", timestampWrites: this.#profiler.write("preprocess")}),
             this.#preprocessPipeline,
             [this.#preprocessBindGroup0, this.#preprocessBindGroup1],
-            (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / PREPROCESS_WORKGROUP_SIZE)),
+            (passEncoder) => passEncoder.dispatchWorkgroups(...dispatchGrid(Math.ceil(count / PREPROCESS_WORKGROUP_SIZE))),
         );
 
         executePass(
@@ -843,7 +848,7 @@ export class Renderer {
             encoder.beginComputePass({label: "emit pass", timestampWrites: this.#profiler.write("emit")}),
             this.#emitPipeline,
             [this.#emitBindGroup0, this.#emitBindGroup1],
-            (passEncoder) => passEncoder.dispatchWorkgroups(Math.ceil(count / EMIT_WORKGROUP_SIZE)),
+            (passEncoder) => passEncoder.dispatchWorkgroups(...dispatchGrid(Math.ceil(count / EMIT_WORKGROUP_SIZE))),
         );
 
         executePass(

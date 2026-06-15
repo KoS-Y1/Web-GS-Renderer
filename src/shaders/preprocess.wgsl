@@ -56,8 +56,12 @@ const SH_C3_6 = -0.5900435899266435f;
 const PREPROCESS_WORKGROUP_SIZE = 32u;
 
 @compute @workgroup_size(PREPROCESS_WORKGROUP_SIZE)
-fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
-    let gindex = gid.x;
+fn computeMain(
+    @builtin(local_invocation_index) lindex: u32,
+    @builtin(workgroup_id) wid: vec3u,
+    @builtin(num_workgroups) numWg: vec3u
+) {
+    let gindex = (wid.y * numWg.x + wid.x) * PREPROCESS_WORKGROUP_SIZE + lindex;
     let count = uniforms.count;
     if gindex >= count {
         return;

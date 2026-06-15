@@ -26,8 +26,12 @@ const TILE_SIZE_X = 16u;
 const EMIT_WORKGROUP_SIZE = 256u;
 
 @compute @workgroup_size(EMIT_WORKGROUP_SIZE)
-fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
-    let gindex = gid.x;
+fn computeMain(
+    @builtin(local_invocation_index) lindex: u32,
+    @builtin(workgroup_id) wid: vec3u,
+    @builtin(num_workgroups) numWg: vec3u
+) {
+    let gindex = (wid.y * numWg.x + wid.x) * EMIT_WORKGROUP_SIZE + lindex;
     if gindex >= uniforms.count {
         return;
     }

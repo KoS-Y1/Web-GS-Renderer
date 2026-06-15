@@ -24,11 +24,11 @@ const SCAN_PARALLEL_WORKGROUP_SIZE = 256u;
 var<workgroup> localCounts: array<atomic<u32>, RADIX_DIGITS>;
 
 @compute @workgroup_size(RADIX_BLOCK_SIZE)
-fn countMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id) wid: vec3u) {
+fn countMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) numWg: vec3u) {
     atomicStore(&localCounts[lindex], 0u);
     workgroupBarrier();
 
-    let windex = wid.x;
+    let windex = wid.y * numWg.x + wid.x;
     let i = windex * RADIX_BLOCK_SIZE + lindex;
     if i < uniforms.instanceCount {
         let d = (keys[i] >> uniforms.shiftAmount) & 0xFFu;
@@ -36,7 +36,10 @@ fn countMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id
     }
     workgroupBarrier();
 
-    counts[lindex * uniforms.blockCountMax + windex] = atomicLoad(&localCounts[lindex]);
+    // 2D over-dispatch can yield windex beyond the real block count; guard the write.
+    if windex < uniforms.blockCountMax {
+        counts[lindex * uniforms.blockCountMax + windex] = atomicLoad(&localCounts[lindex]);
+    }
 }
 
 var<workgroup> temp: array<u32, SCAN_PARALLEL_WORKGROUP_SIZE>;
@@ -126,8 +129,8 @@ fn scanBlockInclusive(lindex: u32) {
 var<workgroup> localDigit: array<u32, RADIX_BLOCK_SIZE>;
 
 @compute @workgroup_size(RADIX_BLOCK_SIZE)
-fn reorderMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id) wid: vec3u) {
-    let windex = wid.x;
+fn reorderMain(@builtin(local_invocation_index) lindex: u32, @builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) numWg: vec3u) {
+    let windex = wid.y * numWg.x + wid.x;
     let i = windex * RADIX_BLOCK_SIZE + lindex; // global index
 
     var d = 0u;
