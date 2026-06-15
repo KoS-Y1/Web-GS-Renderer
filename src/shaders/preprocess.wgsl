@@ -74,8 +74,9 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
 
     let positionView = uniforms.view * vec4f(position, 1.0f);
 
-    // Near culling
-    if positionView.z <= Z_NEAR_VIEW {
+    // Near culling. wgpu-matrix view space is -z forward, so in-front geometry
+    // has negative view z; keep only splats beyond the near plane in front.
+    if positionView.z >= -Z_NEAR_VIEW {
         return;
     }
 
@@ -103,7 +104,7 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
         -covariance2D.y / det,
         covariance2D.x / det
     );
-    let opacity = getPropertyF(opacityOffset, gindex);
+    let opacity = sigmoid(getPropertyF(opacityOffset, gindex));  // .PLY stores opacity as logit
     outputConicOpacity[gindex] = vec4f(conic, opacity);
 
     let dir = normalize(position - uniforms.cameraPos);
@@ -193,6 +194,10 @@ fn quantToMat3(q: vec4f) -> mat3x3f {
         vec3f(xy - wz, 1.0f - (xx + zz), yz + wx),
         vec3f(xz + wy, yz - wx, 1.0f - (xx + yy))
     );
+}
+
+fn sigmoid(x: f32) -> f32 {
+    return 1.0f / (1.0f + exp(-x));
 }
 
 fn ndcToPixel(v: f32, s: f32) -> f32 {

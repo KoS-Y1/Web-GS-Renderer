@@ -25,7 +25,7 @@ async function main() {
     renderer.uploadGsData(strawberryData, "strawberry");
     renderer.uploadGsData(castleData, "castle");
 
-    renderer.setGs("strawberry");
+    renderer.setGs("castle");
 
     resizeCanvas(device, canvas, () => {
         renderer.execute()

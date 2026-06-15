@@ -2,12 +2,12 @@ import {vec3, mat4, utils} from "wgpu-matrix";
 
 const {degToRad} = utils;
 
-const DEFAULT_YAW = -90.0;
+const DEFAULT_YAW = 90.0;
 const DEFUALT_PITCH = 0.0;
 const DEFAULT_FOV = 60.0;
 
 const DEFAULT_SPEED = 1.0;
-const DEFAULT_SENSITIVITY = 1.0;
+const DEFAULT_SENSITIVITY = 0.5;
 
 const WORLD_UP = vec3.create(0.0, 1.0, 0.0);
 const Z_NEAR = 0.2;
@@ -54,7 +54,7 @@ export class Camera {
         this.#width = width;
         this.#height = height;
 
-        this.#eye = vec3.create();
+        this.#eye = vec3.create(0, 0, -10);
 
         this.#yaw = DEFAULT_YAW;
         this.#pitch = DEFUALT_PITCH;
@@ -99,8 +99,6 @@ export class Camera {
 
     update(deltaTime) {
         const {forward, right} = this.#calculateCameraFrame();
-        const moveForward = vec3.negate(forward);
-        const moveRight = vec3.negate(right);
         const dist = DEFAULT_SPEED * deltaTime;
 
         let moved = false;
@@ -110,16 +108,16 @@ export class Camera {
         };
 
         if (this.#keys.has("KeyW")) {
-            step(moveForward, 1);
+            step(forward, 1);
         }
         if (this.#keys.has("KeyS")) {
-            step(moveForward, -1);
+            step(forward, -1);
         }
         if (this.#keys.has("KeyD")) {
-            step(moveRight, 1);
+            step(right, 1);
         }
         if (this.#keys.has("KeyA")) {
-            step(moveRight, -1);
+            step(right, -1);
         }
         if (this.#keys.has("KeyQ")) {
             step(WORLD_UP, 1);
