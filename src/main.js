@@ -3,6 +3,7 @@ import {configureCanvas, resizeCanvas} from "./gpu/context.js";
 import {Renderer} from "./renderer/renderer.js";
 import {loadProjectPly, loadUserPly} from "./loader/loader.js";
 import {UI} from "./ui/ui.js";
+import {showLoading, hideLoading, setLoadingError} from "./ui/loading.js";
 
 const GPU_CANVAS = "gpu-canvas";
 
@@ -43,6 +44,9 @@ async function main() {
         {
             onSelect: (name) => renderer.setGs(name),
             onImport: async (file) => {
+                showLoading(`Loading ${file.name}…`);
+                // Yield a frame so the overlay paints before the synchronous parse blocks the thread.
+                await new Promise((resolve) => requestAnimationFrame(resolve));
                 try {
                     const data = await loadUserPly(file);
                     const name = uniqueName(file.name.replace(/\.ply$/i, ""));
@@ -51,6 +55,8 @@ async function main() {
                     ui.addModel(name, data.count);
                 } catch (e) {
                     console.error(`Failed to import ${file.name}:`, e);
+                } finally {
+                    hideLoading();
                 }
             },
         },
@@ -74,6 +80,7 @@ async function main() {
         requestAnimationFrame(frame);
     }
 
+    hideLoading();
     requestAnimationFrame(frame);
 }
 
@@ -81,4 +88,5 @@ try {
     await main();
 } catch (e) {
     console.error(`Fatal error in main: ${e}`);
+    setLoadingError("Failed to load. See console for details.");
 }
