@@ -3,6 +3,7 @@ export class GpuProfiler {
     #device;
     #capacity;
     #printEvery;
+    #onResult;
 
     #querySet;
     #resolveBuffer;
@@ -18,17 +19,17 @@ export class GpuProfiler {
     #order = [];
     #frames = 0;
 
-    constructor(device, {capacity = 32, printEvery = 8} = {}) {
+    constructor(device, {capacity = 32, printEvery = 8, onResult = null} = {}) {
         this.#enabled = device.features.has("timestamp-query");
         this.#device = device;
         this.#capacity = capacity;
         this.#printEvery = printEvery;
+        this.#onResult = onResult;
 
         if (!this.#enabled) {
             console.warn("GpuProfiler disabled: 'timestamp-query' feature unavailable");
             return;
         }
-        console.log(`GpuProfiler enabled — averaging every ${printEvery} rendered frames`);
 
         this.#querySet = device.createQuerySet({type: "timestamp", count: capacity * 2});
         this.#resolveBuffer = device.createBuffer({
@@ -112,9 +113,7 @@ export class GpuProfiler {
                 rows[label] = {ms: +avg.toFixed(3)};
             }
             rows["TOTAL"] = {ms: +total.toFixed(3)};
-            console.clear();
-            console.log(`GPU pass ms (avg of ${this.#frames} frames):`);
-            console.table(rows);
+            this.#onResult?.(rows);
 
             if (this.#frames >= this.#printEvery) {
                 this.#sums.clear();

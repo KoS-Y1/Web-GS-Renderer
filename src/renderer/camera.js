@@ -54,7 +54,7 @@ export class Camera {
         this.#width = width;
         this.#height = height;
 
-        this.#eye = vec3.create(0, 0, -10);
+        this.#eye = vec3.create(0, -2, -10);
 
         this.#yaw = DEFAULT_YAW;
         this.#pitch = DEFUALT_PITCH;
@@ -120,10 +120,10 @@ export class Camera {
             step(right, -1);
         }
         if (this.#keys.has("KeyQ")) {
-            step(WORLD_UP, 1);
+            step(WORLD_UP, -1);
         }
         if (this.#keys.has("KeyE")) {
-            step(WORLD_UP, -1);
+            step(WORLD_UP, 1);
         }
 
         if (moved) {

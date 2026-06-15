@@ -1,12 +1,15 @@
 import {requestDevice} from "./gpu/device.js";
 import {configureCanvas, resizeCanvas} from "./gpu/context.js";
 import {Renderer} from "./renderer/renderer.js";
-import {loadProjectPly} from "./loader/loader.js";
+import {loadProjectPly, loadUserPly} from "./loader/loader.js";
+import {UI} from "./ui/ui.js";
 
 const GPU_CANVAS = "gpu-canvas";
 
-const STRAWBERRY_PLY = "../assets/strawberry.ply";
-const CASTLE_PLY = "../assets/castle.ply"
+const MODELS = [
+    {name: "strawberry", url: "../assets/strawberry.ply"},
+    {name: "castle", url: "../assets/castle.ply"},
+];
 
 async function main() {
     const device = await requestDevice();
@@ -14,27 +17,63 @@ async function main() {
     const canvas = document.getElementById(GPU_CANVAS);
     const {context, format} = configureCanvas(device, canvas);
 
-    const loadAllPly = Promise.all([
-        loadProjectPly(STRAWBERRY_PLY),
-        loadProjectPly(CASTLE_PLY),
-    ]);
+    const loadAllPly = Promise.all(MODELS.map((model) => loadProjectPly(model.url)));
 
-    const renderer = new Renderer(device, context, format);
+    const ui = new UI();
+    const renderer = new Renderer(device, context, format, (data) => ui.updateDebug(data));
 
-    const [strawberryData, castleData] = await loadAllPly;
-    renderer.uploadGsData(strawberryData, "strawberry");
-    renderer.uploadGsData(castleData, "castle");
+    const loaded = await loadAllPly;
+    MODELS.forEach((model, i) => renderer.uploadGsData(loaded[i], model.name));
 
-    renderer.setGs("castle");
+    renderer.setGs(MODELS[0].name);
+
+    const loadedNames = new Set(MODELS.map((model) => model.name));
+    const uniqueName = (base) => {
+        let name = base;
+        for (let n = 2; loadedNames.has(name); ++n) {
+            name = `${base} (${n})`;
+        }
+        loadedNames.add(name);
+        return name;
+    };
+
+    ui.setModels(
+        MODELS.map((model, i) => ({name: model.name, count: loaded[i].count})),
+        MODELS[0].name,
+        {
+            onSelect: (name) => renderer.setGs(name),
+            onImport: async (file) => {
+                try {
+                    const data = await loadUserPly(file);
+                    const name = uniqueName(file.name.replace(/\.ply$/i, ""));
+                    renderer.uploadGsData(data, name);
+                    renderer.setGs(name);
+                    ui.addModel(name, data.count);
+                } catch (e) {
+                    console.error(`Failed to import ${file.name}:`, e);
+                }
+            },
+        },
+    );
 
     resizeCanvas(device, canvas, () => {
         renderer.execute()
     });
 
+    let lastFrameTime = performance.now();
+    let dtSmooth = 0;
     function frame() {
+        const now = performance.now();
+        const dt = now - lastFrameTime;
+        lastFrameTime = now;
+        if (dt > 0) {
+            dtSmooth = dtSmooth === 0 ? dt : dtSmooth * 0.9 + dt * 0.1;
+            ui.updateFps(1000 / dtSmooth);
+        }
         renderer.execute();
         requestAnimationFrame(frame);
     }
+
     requestAnimationFrame(frame);
 }
 
