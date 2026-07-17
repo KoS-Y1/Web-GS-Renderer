@@ -1,9 +1,20 @@
-## Models
+# WebGPU Gaussian Splatting Renderer
 
-- [Strawberry](https://superspl.at/scene/84df8849)
-- [Cochem Imperial Castle, Germany](https://superspl.at/scene/9b18007e)
+A real-time [3D Gaussian Splatting](https://arxiv.org/pdf/2308.04079) renderer that runs in the browser, written in
+JavaScript and WGSL on WebGPU.
+
+## Features
+
+- GPU-driven tile-based Gaussian splatting rasterizer
+- GPU radix sort over per-tile splat instances, with a parallel prefix-sum scan
+- Full spherical harmonics (degree 3) evaluated per frame from the view direction
+- Load user input `.ply` model by file picker or drag-and-drop
+- Live per-pass GPU timings, splat count, and FPS graph via [Tweakpane](https://tweakpane.github.io/docs/)
 
 ## Optimization
+
+Per-frame averages from the in-app **GPU pass (ms)** panel. The `count`, `scan*`, and `reorder` rows are summed across
+all four radix passes, since the profiler accumulates per label per frame.
 
 ### Single Work Group Scan
 
@@ -23,25 +34,35 @@
 
 ### Parallel Scan
 
-| Step            | Time (ms) |
-|-----------------|---|
-| preprocess      | 0.727 |
-| offset scan     | 4.782 |
-| emit            | 0.309 |
-| indirect arg    | 0.003 |
-| count           | 0.689 |
-| scan local      | 4.389 |
-| scan block sums | 4.745 |
-| scan add offset | 3.989 |
-| reorder         | 3.372 |
-| tile ranges     | 0.061 |
-| raster          | 1.202 |
-| blit            | 0.007 |
+| Step            | Time (ms)  |
+|-----------------|------------|
+| preprocess      | 0.727      |
+| offset scan     | 4.782      |
+| emit            | 0.309      |
+| indirect arg    | 0.003      |
+| count           | 0.689      |
+| scan local      | 4.389      |
+| scan block sums | 4.745      |
+| scan add offset | 3.989      |
+| reorder         | 3.372      |
+| tile ranges     | 0.061      |
+| raster          | 1.202      |
+| blit            | 0.007      |
 | **TOTAL**       | **24.274** |
+
+## Screenshots
+
+![Strawbery](/screenshots/strawberry.png)
+![Castle](/screenshots/castle.png)
+
+## Models
+
+- [Strawberry](https://superspl.at/scene/84df8849)
+- [Cochem Imperial Castle, Germany](https://superspl.at/scene/9b18007e)
 
 ## Reference
 
-- [WebGPU Fundamentals ](https://webgpufundamentals.org/)
+- [WebGPU Fundamentals](https://webgpufundamentals.org/)
 - [WebGPU Samples](https://github.com/webgpu/webgpu-samples)
 - [The PLY Format](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/ply/)
 - [3D Gaussian Splatting for Real-Time Radiance Field Rendering](https://arxiv.org/pdf/2308.04079)
