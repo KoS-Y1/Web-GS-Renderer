@@ -1,7 +1,12 @@
 import {Pane} from "tweakpane";
 
+const DROPZONE_ID = "dropzone";
+const DROPZONE_BROWSE_ID = "dropzone-browse";
+
 export class UI {
     #pane;
+
+    #dropzone;
 
     #sceneFolder;
     #modelState = {model: "", splats: 0};
@@ -53,6 +58,7 @@ export class UI {
         });
         this.#rebuildSelector();
         this.#enableDrop(onImport);
+        this.#enableDropzone(onImport);
     }
 
     addModel(name, count) {
@@ -61,9 +67,49 @@ export class UI {
         this.#modelState.splats = count;
         this.#rebuildSelector();
         this.#splatBinding.refresh();
+        this.hideDropzone();
+    }
+
+    showDropzone() {
+        this.#dropzone?.classList.remove("hidden");
+    }
+
+    hideDropzone() {
+        this.#dropzone?.classList.remove("dragging");
+        this.#dropzone?.classList.add("hidden");
+    }
+
+    #enableDropzone(onImport) {
+        this.#dropzone = document.getElementById(DROPZONE_ID);
+        document
+            .getElementById(DROPZONE_BROWSE_ID)
+            ?.addEventListener("click", () => this.#openFilePicker(onImport));
+
+        // Nested elements fire dragenter/dragleave too, so track depth instead of toggling per event.
+        let depth = 0;
+        window.addEventListener("dragenter", () => {
+            if (++depth === 1) {
+                this.#dropzone?.classList.add("dragging");
+            }
+        });
+        window.addEventListener("dragleave", () => {
+            if (--depth <= 0) {
+                depth = 0;
+                this.#dropzone?.classList.remove("dragging");
+            }
+        });
+        window.addEventListener("drop", () => {
+            depth = 0;
+            this.#dropzone?.classList.remove("dragging");
+        });
     }
 
     #rebuildSelector() {
+        // Nothing to pick from until the user imports a file.
+        if (this.#modelCounts.size === 0) {
+            return;
+        }
+
         this.#modelSelector?.dispose();
 
         const options = {};

@@ -486,6 +486,11 @@ export class Renderer {
         this.#resize();
         this.#camera.update(deltaTime);
 
+        // Nothing to draw until the user imports a PLY.
+        if (!this.#gsBuffers.has(this.#currentGs)) {
+            return;
+        }
+
         if (!this.#camera.pollDirty() && !this.#isResized && this.#currentGs === this.#previousGs) {
             return;
         }
